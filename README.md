@@ -134,6 +134,8 @@ or my fork: https://github.com/andyengria/PowerBlock
 
 ### 3. Install reboot integration
 
+Note this was tested on Debian Trixie with the Raspberry Pi Desktop
+
 ## Quick install
 
 Run the following command on your Raspberry Pi:
