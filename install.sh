@@ -2,20 +2,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Support both folder names (future-proof)
-if [[ -d "$REPO_DIR/rpi" ]]; then
-  SRC_DIR="$REPO_DIR/rpi"
-elif [[ -d "$REPO_DIR/raspberrypi" ]]; then
-  SRC_DIR="$REPO_DIR/raspberrypi"
-else
-  echo "Error: could not find rpi/ or raspberrypi/ directory" >&2
-  exit 1
-fi
-
-SCRIPT_SRC="$SRC_DIR/powerblock-send-reboot-intent.sh"
-UNIT_SRC="$SRC_DIR/powerblock-reboot-intent.service"
+REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
+TMP_DIR="/tmp/powerblockextended"
 
 SCRIPT_DST="/usr/local/bin/powerblock-send-reboot-intent.sh"
 UNIT_DST="/etc/systemd/system/powerblock-reboot-intent.service"
@@ -28,22 +16,57 @@ need_cmd() {
 }
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Please run as root: sudo ./install.sh" >&2
+  echo "Please run as root: sudo bash install.sh" >&2
   exit 1
 fi
 
-need_cmd install
+need_cmd git
 need_cmd systemctl
+need_cmd install
+
+# -----------------------------------------------------------------------------
+# Step 1: detect if repo files exist
+# -----------------------------------------------------------------------------
+
+if [[ -d "./rpi" || -d "./raspberrypi" ]]; then
+  echo "Using local repository files..."
+  REPO_DIR="$(pwd)"
+else
+  echo "Local repo not found, cloning..."
+  rm -rf "$TMP_DIR"
+  git clone --depth 1 "$REPO_URL" "$TMP_DIR"
+  REPO_DIR="$TMP_DIR"
+fi
+
+# -----------------------------------------------------------------------------
+# Step 2: resolve source directory
+# -----------------------------------------------------------------------------
+
+if [[ -d "$REPO_DIR/rpi" ]]; then
+  SRC_DIR="$REPO_DIR/rpi"
+elif [[ -d "$REPO_DIR/raspberrypi" ]]; then
+  SRC_DIR="$REPO_DIR/raspberrypi"
+else
+  echo "Error: could not find rpi/ or raspberrypi/ directory in repo" >&2
+  exit 1
+fi
+
+SCRIPT_SRC="$SRC_DIR/powerblock-send-reboot-intent.sh"
+UNIT_SRC="$SRC_DIR/powerblock-reboot-intent.service"
 
 if [[ ! -f "$SCRIPT_SRC" ]]; then
-  echo "Error: missing source script: $SCRIPT_SRC" >&2
+  echo "Error: missing script: $SCRIPT_SRC" >&2
   exit 1
 fi
 
 if [[ ! -f "$UNIT_SRC" ]]; then
-  echo "Error: missing systemd unit: $UNIT_SRC" >&2
+  echo "Error: missing unit file: $UNIT_SRC" >&2
   exit 1
 fi
+
+# -----------------------------------------------------------------------------
+# Step 3: install files
+# -----------------------------------------------------------------------------
 
 echo "Installing reboot-intent script..."
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
@@ -57,16 +80,18 @@ systemctl daemon-reload
 echo "Enabling reboot-intent service..."
 systemctl enable powerblock-reboot-intent.service
 
+# -----------------------------------------------------------------------------
+# Done
+# -----------------------------------------------------------------------------
+
 echo
 echo "Install complete."
 echo
-echo "Installed files:"
+echo "Installed:"
 echo "  $SCRIPT_DST"
 echo "  $UNIT_DST"
 echo
 echo "Next steps:"
-echo "  1. Confirm standard PowerBlock service is installed and working"
-echo "  2. Reboot and verify quick LED blip"
-echo "  3. Confirm Pi restarts without power cut"
+echo "  Reboot and verify quick LED blip + power stays on"
 ```
 
