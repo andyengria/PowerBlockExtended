@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -93,5 +92,4 @@ echo "  $UNIT_DST"
 echo
 echo "Next steps:"
 echo "  Reboot and verify quick LED blip + power stays on"
-```
 
