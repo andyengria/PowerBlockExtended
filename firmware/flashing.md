@@ -1,63 +1,111 @@
-ATtiny flashing
-Hardware / programmer
+# ATtiny85 Flashing Guide
 
-I reccomend that the ATtiny85 should be flashed over ISP (In-System Programmer) using an Atmel-ICE.
-There are ways to use an Arduino as ISP if you dont have the Atmel-ICE but i did not test these.  
+## Hardware / Programmer
 
-First you will need to solder header pins onto your powerblock / connect to the header pins
+It is recommended to flash the ATtiny85 over **ISP (In-System Programming)** using an **Atmel-ICE**.
 
-Compile the new firmware in arduino ide.
+Other methods (such as using an Arduino as ISP) may work, but were not tested as part of this project.
 
-Known-good Arduino IDE settings
-Use:
+Before flashing:
 
+* Solder header pins onto the PowerBlock (if not already present)
+* Connect the programmer to the ISP header
+
+---
+
+## Arduino IDE Setup
+
+Compile the firmware using the Arduino IDE with the following settings:
+
+```
 Board: ATtiny25/45/85
 Chip: ATtiny85
 Clock: 8 MHz internal
 Programmer: Atmel-ICE (AVR)
-Action: Upload Using Programmer
-Known fuse values
+```
 
-Original fuses observed:
+Then use:
 
+```
+Upload Using Programmer
+```
+
+---
+
+## Known Fuse Values
+
+Original fuse values observed:
+
+```
 lfuse = 0xE2
 hfuse = 0xDF
 efuse = 0xFF
-lock = 0xFF
-Recommended flashing workflow
-Connect Atmel-ICE over ISP
-Read chip with avrdude
-Back up:
-flash
-EEPROM
-fuses
-Build firmware in Arduino IDE
-Use Upload Using Programmer
-Verify operation on hardware
-Recommended backup checklist
+lock  = 0xFF
+```
 
-Before uploading the new firmware, also recommend back up the original in case:
-This makes rollback for any reason easy.
+---
 
-These are the key commands you need to use: 
-#check the connection to the attiny by reading the chip signature
+## Recommended Flashing Workflow
+
+1. Connect Atmel-ICE over ISP
+2. Verify connection with `avrdude`
+3. Back up existing firmware and EEPROM
+4. Build firmware in Arduino IDE
+5. Upload using programmer
+6. Verify operation on hardware
+
+---
+
+## Backup (Strongly Recommended)
+
+Before uploading new firmware, back up the original contents.
+
+This allows easy rollback if needed.
+
+---
+
+## avrdude Commands
+
+### Check connection
+
+```bash
 avrdude -c atmelice_isp -p t85 -v
+```
 
-#backup the existing firmware
-avrdude -c atmelice_isp -p t85   \
-  -U flash:r:powerblock_flash.hex:i   \
-  -U eeprom:r:powerblock_eeprom.hex:i   \
-  -U lfuse:r:lfuse.txt:h   \
-  -U hfuse:r:hfuse.txt:h   \
-  -U efuse:r:efuse.txt:h   \ 
+---
+
+### Backup existing firmware
+
+```bash
+avrdude -c atmelice_isp -p t85 \
+  -U flash:r:powerblock_flash.hex:i \
+  -U eeprom:r:powerblock_eeprom.hex:i \
+  -U lfuse:r:lfuse.txt:h \
+  -U hfuse:r:hfuse.txt:h \
+  -U efuse:r:efuse.txt:h \
   -U lock:r:lock.txt:h
+```
 
-#restore the existing firmware if necessary
+---
+
+### Restore original firmware (if required)
+
+```bash
 avrdude -c atmelice_isp -p t85 \
   -U flash:w:powerblock_flash.hex:i \
   -U eeprom:w:powerblock_eeprom.hex:i \
   -U lfuse:w:0xE2:m \
   -U hfuse:w:0xDF:m \
   -U efuse:w:0xFF:m
+```
 
-Note the new firmware will operate as the old stock firmware even withot the additonal extended rpi software.
+---
+
+## Notes
+
+* The extended firmware remains compatible with the standard PowerBlock service
+* The system will continue to behave like stock firmware unless reboot integration is installed on the Raspberry Pi
+* Always verify wiring and programmer connections before flashing
+
+---
+
