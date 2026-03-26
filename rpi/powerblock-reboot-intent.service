@@ -1,0 +1,11 @@
+[Unit]
+Description=Send PowerBlock reboot-intent pulse
+DefaultDependencies=no
+Before=reboot.target shutdown.target halt.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/powerblock-send-reboot-intent.sh
+
+[Install]
+WantedBy=reboot.target
