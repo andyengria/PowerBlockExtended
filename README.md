@@ -140,6 +140,7 @@ Run the following command on your Raspberry Pi:
 
 ```bash
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
+```
 
 OR clone the repo to your pi
 
