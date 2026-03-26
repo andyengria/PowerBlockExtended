@@ -134,6 +134,15 @@ or my fork: https://github.com/andyengria/PowerBlock
 
 ### 3. Install reboot integration
 
+## Quick install
+
+Run the following command on your Raspberry Pi:
+
+```bash
+wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
+
+OR clone the repo to your pi
+
 From repo root:
 
 ```bash
@@ -146,6 +155,8 @@ This installs:
 * `/etc/systemd/system/powerblock-reboot-intent.service`
 
 and enables the reboot-intent service.
+
+To uninstall the service you can simply call sudo ./uninstall.sh from within the PowerBlockEntended directory.
 
 ---
 
