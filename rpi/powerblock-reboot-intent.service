@@ -1,12 +1,13 @@
 [Unit]
-Description=Send PowerBlock reboot-intent pulse
+Description=PowerBlock reboot-intent hook
 DefaultDependencies=no
-Before=systemd-reboot.service
-Conflicts=shutdown.target
+Before=shutdown.target reboot.target halt.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/powerblock-send-reboot-intent.sh
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/bin/powerblock-send-reboot-intent.sh
 
 [Install]
-WantedBy=reboot.target
+WantedBy=multi-user.target
