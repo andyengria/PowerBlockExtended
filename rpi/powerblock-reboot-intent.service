@@ -1,7 +1,8 @@
 [Unit]
 Description=Send PowerBlock reboot-intent pulse
 DefaultDependencies=no
-Before=reboot.target shutdown.target halt.target
+Before=systemd-reboot.service
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
