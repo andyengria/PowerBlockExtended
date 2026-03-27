@@ -35,7 +35,6 @@
 #define NORMAL_EDGE_MAX_MS              450
 
 #define PULSE_SEQUENCE_TIMEOUT_MS       900
-#define REBOOT_PENDING_TIMEOUT_MS       30000UL
 
 Powerled pl;
 Interface hw;
@@ -50,7 +49,6 @@ bool bootTimeoutPending = false;
 
 // one-shot reboot intent
 bool rebootPending = false;
-unsigned long rebootPendingSetMs = 0;
 bool rebootFlashActive = false;
 
 // pulse decoder state
@@ -101,18 +99,11 @@ void indicateRebootIntentArmed() {
 
 void clearRebootPending() {
   rebootPending = false;
-  rebootPendingSetMs = 0;
 }
 
 void armRebootPending() {
   rebootPending = true;
-  rebootPendingSetMs = millis();
   indicateRebootIntentArmed();
-}
-
-bool isRebootPendingValid() {
-  if (!rebootPending) return false;
-  return (millis() - rebootPendingSetMs) <= REBOOT_PENDING_TIMEOUT_MS;
 }
 
 void turnPowerSupplyOff();
@@ -153,7 +144,7 @@ void delayedPowerOffCheck() {
   if (!systemTurnedOn || systemIsUp) return;
 
   // One-shot reboot intent wins only for the next Pi-down.
-  if (isRebootPendingValid()) {
+  if (rebootPending) {
     clearRebootPending();
     return; // keep power on, assume reboot
   }
@@ -337,12 +328,6 @@ void pollRunningStatePersistence() {
   }
 }
 
-void pollRebootPendingTimeout() {
-  if (rebootPending && !isRebootPendingValid()) {
-    clearRebootPending();
-  }
-}
-
 void pollLongPressForceOff() {
   bool pressed = IS_MAIN_SWITCH_ON;
   unsigned long now = millis();
@@ -388,7 +373,6 @@ void setup() {
 
 void loop() {
   pollRunningStatePersistence();
-  pollRebootPendingTimeout();
   pollLongPressForceOff();
   pl.thread();
   hw.thread();
