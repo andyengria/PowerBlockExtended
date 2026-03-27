@@ -23,10 +23,7 @@ need_cmd git
 need_cmd systemctl
 need_cmd install
 
-# -----------------------------------------------------------------------------
-# Step 1: detect if repo files exist
-# -----------------------------------------------------------------------------
-
+# Step 1: find local repo files or self-bootstrap from GitHub
 if [[ -d "./rpi" || -d "./raspberrypi" ]]; then
   echo "Using local repository files..."
   REPO_DIR="$(pwd)"
@@ -37,10 +34,7 @@ else
   REPO_DIR="$TMP_DIR"
 fi
 
-# -----------------------------------------------------------------------------
 # Step 2: resolve source directory
-# -----------------------------------------------------------------------------
-
 if [[ -d "$REPO_DIR/rpi" ]]; then
   SRC_DIR="$REPO_DIR/rpi"
 elif [[ -d "$REPO_DIR/raspberrypi" ]]; then
@@ -63,25 +57,25 @@ if [[ ! -f "$UNIT_SRC" ]]; then
   exit 1
 fi
 
-# -----------------------------------------------------------------------------
 # Step 3: install files
-# -----------------------------------------------------------------------------
-
 echo "Installing reboot-intent script..."
 install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
 
 echo "Installing systemd unit..."
 install -m 0644 "$UNIT_SRC" "$UNIT_DST"
 
+# Step 4: reload + enable + start
 echo "Reloading systemd..."
 systemctl daemon-reload
+
+echo "Disabling old reboot-intent unit state if present..."
+systemctl disable powerblock-reboot-intent.service 2>/dev/null || true
 
 echo "Enabling reboot-intent service..."
 systemctl enable powerblock-reboot-intent.service
 
-# -----------------------------------------------------------------------------
-# Done
-# -----------------------------------------------------------------------------
+echo "Starting reboot-intent service..."
+systemctl restart powerblock-reboot-intent.service
 
 echo
 echo "Install complete."
@@ -90,6 +84,10 @@ echo "Installed:"
 echo "  $SCRIPT_DST"
 echo "  $UNIT_DST"
 echo
+echo "Current unit state:"
+systemctl status powerblock-reboot-intent.service --no-pager || true
+echo
 echo "Next steps:"
-echo "  Reboot and verify quick LED blip + power stays on"
-
+echo "  1. Confirm standard PowerBlock service is installed and working"
+echo "  2. Run: systemctl is-enabled powerblock-reboot-intent.service"
+echo "  3. Reboot and verify quick LED blip + power stays on"
