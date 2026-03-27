@@ -1,0 +1,2 @@
+[Service]
+ExecStopPost=/usr/local/bin/powerblock-send-reboot-intent-if-reboot.sh
