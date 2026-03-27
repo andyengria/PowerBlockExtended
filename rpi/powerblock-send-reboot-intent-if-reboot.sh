@@ -14,11 +14,6 @@ have_gpioset_toggle() {
 }
 
 pulse_v2() {
-    # libgpiod 2.x path
-    # 5 pulses total:
-    #   first high  500 ms
-    #   next 4 high 300 ms
-    # with 80 ms low gaps between them, finishing low.
     exec /usr/bin/gpioset "$CHIP" "$STATUS_PIN=1" \
         --toggle 500ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,0
 }
@@ -35,8 +30,6 @@ set_for_ms_v1() {
 }
 
 pulse_v1() {
-    # libgpiod 1.x path
-    # Actively drive high and low in separate timed requests.
     set_for_ms_v1 1 500
     set_for_ms_v1 0 "$GAP_MS"
 
@@ -53,7 +46,6 @@ pulse_v1() {
     set_for_ms_v1 0 "$GAP_MS"
 }
 
-# Only act on real reboot transactions.
 is_reboot_transaction || exit 0
 
 if have_gpioset_toggle; then
