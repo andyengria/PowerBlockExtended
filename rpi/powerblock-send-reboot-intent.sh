@@ -4,6 +4,11 @@ set -e
 CHIP=0
 STATUS_PIN=17
 
+# Only send the pulse if this shutdown transaction is actually a reboot.
+if ! systemctl list-jobs --no-pager | grep -q 'reboot.target.*start'; then
+  exit 0
+fi
+
 pkill -f /usr/bin/powerblockservice >/dev/null 2>&1 || true
 pkill gpioset >/dev/null 2>&1 || true
 
