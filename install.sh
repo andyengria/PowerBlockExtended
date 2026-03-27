@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
 TMP_DIR="/tmp/powerblockextended"
 
-SCRIPT_DST="/usr/local/bin/powerblock-send-reboot-intent.sh"
-UNIT_DST="/etc/systemd/system/powerblock-reboot-intent.service"
+WRAPPER_DST_BIN="/usr/local/bin/reboot"
+WRAPPER_DST_SBIN="/usr/local/sbin/reboot"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -20,10 +20,8 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 need_cmd git
-need_cmd systemctl
 need_cmd install
 
-# Step 1: find local repo files or self-bootstrap from GitHub
 if [[ -d "./rpi" || -d "./raspberrypi" ]]; then
   echo "Using local repository files..."
   REPO_DIR="$(pwd)"
@@ -34,7 +32,6 @@ else
   REPO_DIR="$TMP_DIR"
 fi
 
-# Step 2: resolve source directory
 if [[ -d "$REPO_DIR/rpi" ]]; then
   SRC_DIR="$REPO_DIR/rpi"
 elif [[ -d "$REPO_DIR/raspberrypi" ]]; then
@@ -44,50 +41,28 @@ else
   exit 1
 fi
 
-SCRIPT_SRC="$SRC_DIR/powerblock-send-reboot-intent.sh"
-UNIT_SRC="$SRC_DIR/powerblock-reboot-intent.service"
+WRAPPER_SRC="$SRC_DIR/reboot"
 
-if [[ ! -f "$SCRIPT_SRC" ]]; then
-  echo "Error: missing script: $SCRIPT_SRC" >&2
+if [[ ! -f "$WRAPPER_SRC" ]]; then
+  echo "Error: missing reboot wrapper: $WRAPPER_SRC" >&2
   exit 1
 fi
 
-if [[ ! -f "$UNIT_SRC" ]]; then
-  echo "Error: missing unit file: $UNIT_SRC" >&2
-  exit 1
-fi
-
-# Step 3: install files
-echo "Installing reboot-intent script..."
-install -m 0755 "$SCRIPT_SRC" "$SCRIPT_DST"
-
-echo "Installing systemd unit..."
-install -m 0644 "$UNIT_SRC" "$UNIT_DST"
-
-# Step 4: reload + enable + start
-echo "Reloading systemd..."
-systemctl daemon-reload
-
-echo "Disabling old reboot-intent unit state if present..."
-systemctl disable powerblock-reboot-intent.service 2>/dev/null || true
-
-echo "Enabling reboot-intent service..."
-systemctl enable powerblock-reboot-intent.service
-
-echo "Starting reboot-intent service..."
-systemctl restart powerblock-reboot-intent.service
+echo "Installing reboot wrapper..."
+install -m 0755 "$WRAPPER_SRC" "$WRAPPER_DST_BIN"
+install -m 0755 "$WRAPPER_SRC" "$WRAPPER_DST_SBIN"
 
 echo
 echo "Install complete."
 echo
 echo "Installed:"
-echo "  $SCRIPT_DST"
-echo "  $UNIT_DST"
+echo "  $WRAPPER_DST_BIN"
+echo "  $WRAPPER_DST_SBIN"
 echo
-echo "Current unit state:"
-systemctl status powerblock-reboot-intent.service --no-pager || true
+echo "Check PATH precedence with:"
+echo "  command -v reboot"
 echo
-echo "Next steps:"
-echo "  1. Confirm standard PowerBlock service is installed and working"
-echo "  2. Run: systemctl is-enabled powerblock-reboot-intent.service"
-echo "  3. Reboot and verify quick LED blip + power stays on"
+echo "Expected result:"
+echo "  /usr/local/bin/reboot"
+echo "or"
+echo "  /usr/local/sbin/reboot"
