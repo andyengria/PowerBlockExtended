@@ -27,17 +27,17 @@
 //
 // No pulse = legacy behavior (Pi-down => power off)
 
-#define FIRST_LONG_MIN_MS               220
-#define FIRST_LONG_MAX_MS               450
+#define FIRST_LONG_MIN_MS               200
+#define FIRST_LONG_MAX_MS               600
 
-#define NORMAL_EDGE_MIN_MS               70
+#define NORMAL_EDGE_MIN_MS               50
 #define NORMAL_EDGE_MAX_MS              220
 
-#define MIN_SHORT_INTERVALS_FOR_REBOOT   3
+#define MIN_SHORT_INTERVALS_FOR_REBOOT   2
 #define MAX_INVALID_INTERVALS            0
 
 #define PULSE_SEQUENCE_TIMEOUT_MS       700
-#define REBOOT_PENDING_TIMEOUT_MS     30000UL
+#define REBOOT_PENDING_TIMEOUT_MS     60000UL
 
 Powerled pl;
 Interface hw;
@@ -338,7 +338,7 @@ void rpiEdge(bool rpiIsUpNow) {
   }
 }
 
-
+/*
 void pollPulseDecoder() {
   if (!pulseSeqActive) return;
 
@@ -355,8 +355,8 @@ void pollPulseDecoder() {
   }
 
   resetPulseSequence();
-}
-/*
+}*/
+
 //#TEST
 void pollPulseDecoder() {
   if (!pulseSeqActive) return;
@@ -383,7 +383,7 @@ void pollPulseDecoder() {
 
   resetPulseSequence();
 }
-*/
+
 // -----------------------------------------------------------------------------
 // Polling helpers
 // -----------------------------------------------------------------------------
