@@ -1,55 +1,70 @@
 #!/bin/sh
 set -eu
 
-CHIP="gpiochip0"
-STATUS_PIN="17"
-GAP_MS="80"
+CHIP=0
+STATUS_PIN=17
 
-is_reboot_transaction() {
-    systemctl list-jobs --no-pager 2>/dev/null | grep -q 'reboot.target.*start'
+# Timing definition (ms)
+
+# Must be: odd number of entries so final state ends LOW
+
+# Starts HIGH (1), then alternates
+
+TIMINGS="320 100 180 100 180 100 180"
+
+# Build comma-separated list for gpioset v2
+
+build_toggle_string() {
+  TOGGLE=""
+  for t in $TIMINGS; do
+    if [ -z "$TOGGLE" ]; then
+      TOGGLE="${t}ms"
+    else
+      TOGGLE="${TOGGLE},${t}ms"
+    fi
+  done
+  # Append ,0 so gpioset exits after sequence
+  TOGGLE="${TOGGLE},0"
 }
 
-have_gpioset_toggle() {
-    /usr/bin/gpioset --help 2>&1 | grep -q -- '--toggle'
-}
-
+# libgpiod v2 (fast path)
 pulse_v2() {
-    exec /usr/bin/gpioset "$CHIP" "$STATUS_PIN=1" \
-        --toggle 500ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,"${GAP_MS}"ms,300ms,0
+  build_toggle_string
+  exec /usr/bin/gpioset -c "$CHIP" 
+  --toggle "$TOGGLE" 
+  "$STATUS_PIN=1"
 }
 
-set_for_ms_v1() {
-    value="$1"
-    duration_ms="$2"
+# libgpiod v1 fallback
+set_line() {
+  /usr/bin/gpioset -c "$CHIP" "$STATUS_PIN=$1"
+}
 
-    sec=$((duration_ms / 1000))
-    usec=$(((duration_ms % 1000) * 1000))
-
-    /usr/bin/gpioset --mode=time --sec="$sec" --usec="$usec" \
-        "$CHIP" "${STATUS_PIN}=${value}"
+sleep_ms() {
+  sleep "$(awk "BEGIN { printf "%.3f", $1/1000 }")"
 }
 
 pulse_v1() {
-    set_for_ms_v1 1 500
-    set_for_ms_v1 0 "$GAP_MS"
-
-    set_for_ms_v1 1 300
-    set_for_ms_v1 0 "$GAP_MS"
-
-    set_for_ms_v1 1 300
-    set_for_ms_v1 0 "$GAP_MS"
-
-    set_for_ms_v1 1 300
-    set_for_ms_v1 0 "$GAP_MS"
-
-    set_for_ms_v1 1 300
-    set_for_ms_v1 0 "$GAP_MS"
+  state=1
+  for t in $TIMINGS; do
+    set_line "$state"
+    sleep_ms "$t"
+    if [ "$state" -eq 1 ]; then
+      state=0
+    else
+      state=1
+    fi
+  done
+  # ensure final LOW
+  set_line 0
 }
 
-is_reboot_transaction || exit 0
-
-if have_gpioset_toggle; then
-    pulse_v2
+# Detect v2 support
+if /usr/bin/gpioset --help 2>&1 | grep -q -- '--toggle'; then
+  pulse_v2
 else
-    pulse_v1
+  pulse_v1
 fi
+
+exit 0
+

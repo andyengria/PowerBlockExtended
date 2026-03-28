@@ -1,3 +1,4 @@
+// Interface.h
 #ifndef INTERFACE_H_
 #define INTERFACE_H_
 
@@ -51,17 +52,18 @@
 class Interface {
   private:
     static Interface *thisInstance;
-    unsigned long callbackTimeout = 0;
 
     bool lastStateSwitch = false;
 
-    // PB3 raw-edge state vs committed stable state
-    bool rpiRawState = false;
-    bool rpiStableState = false;
-    bool rpiPendingStableCommit = false;
-    unsigned long rpiLastRawChangeMs = 0;
+    // Debounce only for the physical pushbutton on PB0
+    volatile bool switchDebouncePending = false;
+    volatile unsigned long switchDebounceDeadlineMs = 0;
 
-    void (*pointerCallback)(void) = 0;
+    // PB3 raw-edge state vs committed stable state
+    volatile bool rpiRawState = false;
+    bool rpiStableState = false;
+    volatile bool rpiPendingStableCommit = false;
+    volatile unsigned long rpiLastRawChangeMs = 0;
 
     void (*functionTurnedOff)(void) = 0;
     void (*functionTurnedOn)(void) = 0;
@@ -75,10 +77,6 @@ class Interface {
     Interface();
 
     static inline void pinChangeInterrupt();
-    void functionToReturn(void);
-    static void containerToCallback(void);
-
-    void setCallback(void (*pointerFunction)(void), long _delay);
 
     void setFunctionTurnedOff(void (*funcPointer)(void));
     void setFunctionTurnedOn(void (*funcPointer)(void));

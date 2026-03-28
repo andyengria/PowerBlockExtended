@@ -1,3 +1,4 @@
+// Interface.cpp
 #include "Interface.h"
 
 Interface *Interface::thisInstance = 0;
@@ -31,47 +32,15 @@ Interface::Interface () {
 
   lastStateSwitch = IS_MAIN_SWITCH_ON;
 
+  switchDebouncePending = false;
+  switchDebounceDeadlineMs = 0;
+
   rpiRawState = IS_RPI_SYSTEM_UP;
   rpiStableState = rpiRawState;
   rpiPendingStableCommit = false;
   rpiLastRawChangeMs = millis();
 
   thisInstance = this;
-}
-
-void Interface::containerToCallback(void) {
-  thisInstance->functionToReturn();
-}
-
-void Interface::functionToReturn(void) {
-  bool switchPressed = IS_MAIN_SWITCH_ON;
-  bool rpiIsUp = IS_RPI_SYSTEM_UP;
-  unsigned long now = millis();
-
-  // Momentary pushbutton handling:
-  // only react on press edge, ignore release edge
-  if (switchPressed != this->lastStateSwitch) {
-    if (switchPressed) {
-      if (functionTurnedOn) functionTurnedOn();
-    }
-    this->lastStateSwitch = switchPressed;
-  }
-
-  // Raw PB3 edge handling:
-  // - always feed pulse decoder immediately
-  // - do NOT immediately commit Pi up/down state
-  if (rpiIsUp != this->rpiRawState) {
-    this->rpiRawState = rpiIsUp;
-    this->rpiLastRawChangeMs = now;
-    this->rpiPendingStableCommit = true;
-
-    if (rpiEdge) rpiEdge(rpiIsUp);
-  }
-}
-
-void Interface::setCallback(void (*pointerFunction)(void), long _delay) {
-  this->pointerCallback = pointerFunction;
-  this->callbackTimeout = millis() + _delay;
 }
 
 void Interface::setFunctionTurnedOff(void (*funcPointer)(void)) {
@@ -95,17 +64,45 @@ void Interface::setRpiEdge(void (*funcPointer)(bool)) {
 }
 
 void Interface::pinChanceIntHandler() {
-  if (!(this->pointerCallback)) {
-    this->setCallback(Interface::containerToCallback, DEBOUNCING_TIMEOUT_MS);
+  unsigned long now = millis();
+
+  // Handle PB3 / IN_RPI immediately.
+  // This preserves all reboot-intent pulse edges instead of passing them
+  // through the generic debounce callback path.
+  bool rpiIsUp = IS_RPI_SYSTEM_UP;
+  if (rpiIsUp != this->rpiRawState) {
+    this->rpiRawState = rpiIsUp;
+    this->rpiLastRawChangeMs = now;
+    this->rpiPendingStableCommit = true;
+
+    if (rpiEdge) rpiEdge(rpiIsUp);
   }
+
+  // Handle the physical pushbutton separately with debounce.
+  this->switchDebouncePending = true;
+  this->switchDebounceDeadlineMs = now + DEBOUNCING_TIMEOUT_MS;
 }
 
 void Interface::thread() {
   unsigned long now = millis();
 
-  if (this->pointerCallback && (long)(now - this->callbackTimeout) >= 0) {
-    this->pointerCallback();
-    this->pointerCallback = 0;
+  // Debounced momentary pushbutton handling:
+  // only react on press edge, ignore release edge
+  if (this->switchDebouncePending &&
+      (long)(now - this->switchDebounceDeadlineMs) >= 0) {
+
+    bool switchPressed = IS_MAIN_SWITCH_ON;
+
+    if (switchPressed != this->lastStateSwitch) {
+      if (switchPressed) {
+        if (functionTurnedOn) functionTurnedOn();
+      } else {
+        if (functionTurnedOff) functionTurnedOff();
+      }
+      this->lastStateSwitch = switchPressed;
+    }
+
+    this->switchDebouncePending = false;
   }
 
   // Only treat PB3 as a real Pi-up/Pi-down state change once it has

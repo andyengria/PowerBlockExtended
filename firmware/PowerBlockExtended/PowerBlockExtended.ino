@@ -16,9 +16,10 @@
 // Reboot-intent pulse protocol on IN_RPI (PB3)
 //
 // One-shot reboot intent:
-//   5 pulses total
-//   first pulse ~500 ms
-//   remaining pulses/gaps ~300 ms
+//   4 pulses total
+//   first pulse ~280 ms
+//   remaining pulses ~120 ms
+//   gaps ~100 ms
 //
 // Meaning:
 //   If this pattern is seen while the Pi is up, the NEXT Pi-down is treated
@@ -26,15 +27,17 @@
 //
 // No pulse = legacy behavior (Pi-down => power off)
 
-#define REBOOT_INTENT_EDGES             10   // 5 pulses = 10 edges
+#define FIRST_LONG_MIN_MS               220
+#define FIRST_LONG_MAX_MS               450
 
-#define FIRST_LONG_MIN_MS               380
-#define FIRST_LONG_MAX_MS               700
+#define NORMAL_EDGE_MIN_MS               70
+#define NORMAL_EDGE_MAX_MS              220
 
-#define NORMAL_EDGE_MIN_MS              180
-#define NORMAL_EDGE_MAX_MS              450
+#define MIN_SHORT_INTERVALS_FOR_REBOOT   3
+#define MAX_INVALID_INTERVALS            0
 
-#define PULSE_SEQUENCE_TIMEOUT_MS       900
+#define PULSE_SEQUENCE_TIMEOUT_MS       700
+#define REBOOT_PENDING_TIMEOUT_MS     30000UL
 
 Powerled pl;
 Interface hw;
@@ -52,11 +55,15 @@ bool rebootPending = false;
 bool rebootFlashActive = false;
 
 // pulse decoder state
+bool pulseDebugBlinking = false;//#TEST
 bool pulseSeqActive = false;
-uint8_t pulseEdgeCount = 0;
+bool pulseSawLongFirst = false;
+uint8_t pulseShortIntervalCount = 0;
+uint8_t pulseInvalidIntervalCount = 0;
 unsigned long pulseFirstEdgeMs = 0;
 unsigned long pulseLastEdgeMs = 0;
 unsigned long pulseFirstIntervalMs = 0;
+unsigned long rebootPendingArmedMs = 0;
 
 // long-press state
 bool switchPressActive = false;
@@ -77,7 +84,9 @@ void markStateOff() {
 
 void resetPulseSequence() {
   pulseSeqActive = false;
-  pulseEdgeCount = 0;
+  pulseSawLongFirst = false;
+  pulseShortIntervalCount = 0;
+  pulseInvalidIntervalCount = 0;
   pulseFirstEdgeMs = 0;
   pulseLastEdgeMs = 0;
   pulseFirstIntervalMs = 0;
@@ -91,19 +100,32 @@ void finishRebootIntentFlash() {
 
 void indicateRebootIntentArmed() {
   rebootFlashActive = true;
-
-  // very quick confirmation flash
+  pl.setFrequency(LED_CYCLE_256MS);
   pl.setState(LED_OFF);
-  st.setTimeout(120, &finishRebootIntentFlash);
+  st.setTimeout(800, &finishRebootIntentFlash);
 }
 
 void clearRebootPending() {
   rebootPending = false;
+  rebootPendingArmedMs = 0;
 }
 
 void armRebootPending() {
   rebootPending = true;
-  indicateRebootIntentArmed();
+  rebootPendingArmedMs = millis();
+
+  // Debug mode: hold LED blinking instead of quick blip
+  pl.setFrequency(LED_CYCLE_256MS);
+  pl.setState(LED_BLINKING);
+}
+
+void pollRebootPendingTimeout() {
+  if (!rebootPending) return;
+
+  unsigned long now = millis();
+  if ((now - rebootPendingArmedMs) >= REBOOT_PENDING_TIMEOUT_MS) {
+    clearRebootPending();
+  }
 }
 
 void turnPowerSupplyOff();
@@ -150,7 +172,7 @@ void delayedPowerOffCheck() {
   }
 
   // Default behavior is legacy: Pi-down => power off
-  turnPowerSupplyOff();
+  turnPowerSupplyOff();//#TEST
 }
 
 void handleButtonPress() {
@@ -188,7 +210,7 @@ void handleButtonPress() {
     RPI_SHUTDOWN_REQUEST;
 
     if (rpiBootUpDetectionFailure) {
-      turnPowerSupplyOff();
+      turnPowerSupplyOff();//#TEST
     }
   }
 }
@@ -253,7 +275,7 @@ void rpiDown() {
 // -----------------------------------------------------------------------------
 
 void rpiEdge(bool rpiIsUpNow) {
-  if (!systemTurnedOn) return;
+  if (!systemTurnedOn) return;//#TEST
 
   unsigned long now = millis();
 
@@ -264,7 +286,9 @@ void rpiEdge(bool rpiIsUpNow) {
 
   if (!pulseSeqActive) {
     pulseSeqActive = true;
-    pulseEdgeCount = 1;
+    pulseSawLongFirst = false;
+    pulseShortIntervalCount = 0;
+    pulseInvalidIntervalCount = 0;
     pulseFirstEdgeMs = now;
     pulseLastEdgeMs = now;
     pulseFirstIntervalMs = 0;
@@ -272,32 +296,48 @@ void rpiEdge(bool rpiIsUpNow) {
   }
 
   unsigned long dt = now - pulseLastEdgeMs;
+  pulseLastEdgeMs = now;
 
-  if (pulseEdgeCount == 1) {
-    if (!((dt >= FIRST_LONG_MIN_MS && dt <= FIRST_LONG_MAX_MS) ||
-          (dt >= NORMAL_EDGE_MIN_MS && dt <= NORMAL_EDGE_MAX_MS))) {
-      pulseSeqActive = true;
-      pulseEdgeCount = 1;
-      pulseFirstEdgeMs = now;
-      pulseLastEdgeMs = now;
-      pulseFirstIntervalMs = 0;
+  // First measured interval must be the special long interval.
+  if (!pulseSawLongFirst) {
+    if (dt >= FIRST_LONG_MIN_MS && dt <= FIRST_LONG_MAX_MS) {
+      pulseSawLongFirst = true;
+      pulseFirstIntervalMs = dt;
       return;
     }
-    pulseFirstIntervalMs = dt;
-  } else {
-    if (!(dt >= NORMAL_EDGE_MIN_MS && dt <= NORMAL_EDGE_MAX_MS)) {
-      pulseSeqActive = true;
-      pulseEdgeCount = 1;
-      pulseFirstEdgeMs = now;
-      pulseLastEdgeMs = now;
-      pulseFirstIntervalMs = 0;
-      return;
-    }
+
+    // If we got a non-long interval instead, restart sequence from here.
+    pulseSeqActive = true;
+    pulseSawLongFirst = false;
+    pulseShortIntervalCount = 0;
+    pulseInvalidIntervalCount = 0;
+    pulseFirstEdgeMs = now;
+    pulseLastEdgeMs = now;
+    pulseFirstIntervalMs = 0;
+    return;
   }
 
-  pulseEdgeCount++;
-  pulseLastEdgeMs = now;
+  // After the long-first interval, count good short intervals.
+  if (dt >= NORMAL_EDGE_MIN_MS && dt <= NORMAL_EDGE_MAX_MS) {
+    pulseShortIntervalCount++;
+    return;
+  }
+
+  // Any bad interval weakens confidence.
+  pulseInvalidIntervalCount++;
+
+  // Too much garbage => abandon and restart from this edge.
+  if (pulseInvalidIntervalCount > MAX_INVALID_INTERVALS) {
+    pulseSeqActive = true;
+    pulseSawLongFirst = false;
+    pulseShortIntervalCount = 0;
+    pulseInvalidIntervalCount = 0;
+    pulseFirstEdgeMs = now;
+    pulseLastEdgeMs = now;
+    pulseFirstIntervalMs = 0;
+  }
 }
+
 
 void pollPulseDecoder() {
   if (!pulseSeqActive) return;
@@ -305,17 +345,45 @@ void pollPulseDecoder() {
   unsigned long now = millis();
   if ((now - pulseLastEdgeMs) < PULSE_SEQUENCE_TIMEOUT_MS) return;
 
-  bool firstIsLong = (pulseFirstIntervalMs >= FIRST_LONG_MIN_MS &&
-                      pulseFirstIntervalMs <= FIRST_LONG_MAX_MS);
+  bool validSequence =
+      pulseSawLongFirst &&
+      pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT &&
+      pulseInvalidIntervalCount <= MAX_INVALID_INTERVALS;
 
-  // 5-pulse long-first sequence arms one-shot reboot keep-power-on
-  if (firstIsLong && pulseEdgeCount == REBOOT_INTENT_EDGES) {
+  if (validSequence) {
     armRebootPending();
   }
 
   resetPulseSequence();
 }
+/*
+//#TEST
+void pollPulseDecoder() {
+  if (!pulseSeqActive) return;
 
+  unsigned long now = millis();
+  if ((now - pulseLastEdgeMs) < PULSE_SEQUENCE_TIMEOUT_MS) return;
+
+  // Debug: every completed pulse sequence flips the LED mode
+  pulseDebugBlinking = !pulseDebugBlinking;
+  pl.setFrequency(LED_CYCLE_1S);
+  pl.setState(pulseDebugBlinking ? LED_BLINKING : LED_ON);
+
+  // Normal decoder logic can stay, or you can temporarily return here
+  // if you only want to test whether a sequence is being seen at all.
+
+  bool validSequence =
+      pulseSawLongFirst &&
+      pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT &&
+      pulseInvalidIntervalCount <= MAX_INVALID_INTERVALS;
+
+  if (validSequence) {
+    armRebootPending();
+  }
+
+  resetPulseSequence();
+}
+*/
 // -----------------------------------------------------------------------------
 // Polling helpers
 // -----------------------------------------------------------------------------
