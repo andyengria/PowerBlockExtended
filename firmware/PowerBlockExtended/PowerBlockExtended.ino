@@ -1,3 +1,66 @@
+/*  PowerBlockExtended.ino
+ *   
+ *  Raspberry PI PetRockBlock PowerBlockExtended (Arduino ATtiny85)
+ *
+ *  Created on: 26/03/2026
+ *      Author: Andy Young (powerblocke@hammert.anonaddy.me)
+ *
+ *  Based on Vagner Panarello PI PowerController code.
+ *
+ *  PowerBlockExtended adds:
+ *    - EEPROM-based restore-after-power-loss
+ *    - reboot-without-power-cut using a one-shot reboot-intent pulse
+ *    - clean integration with the standard PetRockBlock Raspberry Pi service
+ *
+ *  Reboot-intent pulse protocol on IN_RPI (PB3)
+ *  ------------------------------------------------
+ *  One-shot reboot intent:
+ *    - quick 4-pulse pattern on PB3
+ *    - first interval is "long"
+ *    - following intervals are "short"
+ *
+ *  Example Linux-side timing sequence:
+ *    220,70,90,70,90,70,90
+ *
+ *  Meaning:
+ *    - if this pattern is seen while the system is ON, the NEXT Pi-down is
+ *      treated as a reboot and power is kept ON
+ *    - no pulse = legacy behavior (Pi-down => power off)
+ *
+ *  Decoder behavior:
+ *    - runs directly on PB3 edges
+ *    - first interval must match the configured long window
+ *    - then at least N valid short intervals must be seen
+ *    - reboot intent is armed greedily as soon as enough valid intervals
+ *      are received
+ *    - exact edge count is not required
+ *    - partial/invalid sequences time out and are discarded
+ *
+ *  Implementation notes:
+ *    - requires updated Interface.cpp / Interface.h where:
+ *        * PB3 edge handling is immediate
+ *        * front-panel button debounce remains delayed
+ *    - reboot intent is one-shot and is cleared after use or timeout
+ *    - normal PowerBlock shutdown behavior is otherwise preserved
+ *
+ *  This library is free software; you can redistribute it
+ *  and/or modify it under the terms of the GNU Lesser
+ *  General Public License as published by the Free Software
+ *  Foundation; either version 2.1 of the License, or (at
+ *  your option) any later version.
+ *
+ *  This library is distributed in the hope that it will
+ *  be useful, but WITHOUT ANY WARRANTY; without even the
+ *  implied warranty of MERCHANTABILITY or FITNESS FOR A
+ *  PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ *  License for more details.
+ *
+ *  You should have received a copy of the GNU Lesser
+ *  General Public License along with this library; if not,
+ *  write to the Free Software Foundation, Inc.,
+ *  51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+ *
+ */
 #include <EEPROM.h>
 #include "Powerled.h"
 #include "Interface.h"
@@ -13,30 +76,16 @@
 #define AFTER_RPI_SHUTDOWN_POWEROFF_MS  8000
 #define FORCE_OFF_HOLD_MS               5000UL
 
-// Reboot-intent pulse protocol on IN_RPI (PB3)
-//
-// One-shot reboot intent:
-//   4 pulses total
-//   first pulse ~280 ms
-//   remaining pulses ~120 ms
-//   gaps ~100 ms
-//
-// Meaning:
-//   If this pattern is seen while the Pi is up, the NEXT Pi-down is treated
-//   as a reboot and power is kept on.
-//
-// No pulse = legacy behavior (Pi-down => power off)
-
-#define FIRST_LONG_MIN_MS               200
-#define FIRST_LONG_MAX_MS               600
+#define FIRST_LONG_MIN_MS               180
+#define FIRST_LONG_MAX_MS               320
 
 #define NORMAL_EDGE_MIN_MS               50
-#define NORMAL_EDGE_MAX_MS              220
+#define NORMAL_EDGE_MAX_MS              140
 
 #define MIN_SHORT_INTERVALS_FOR_REBOOT   2
 #define MAX_INVALID_INTERVALS            0
 
-#define PULSE_SEQUENCE_TIMEOUT_MS       700
+#define PULSE_SEQUENCE_TIMEOUT_MS       250
 #define REBOOT_PENDING_TIMEOUT_MS     60000UL
 
 Powerled pl;
@@ -55,7 +104,6 @@ bool rebootPending = false;
 bool rebootFlashActive = false;
 
 // pulse decoder state
-bool pulseDebugBlinking = false;//#TEST
 bool pulseSeqActive = false;
 bool pulseSawLongFirst = false;
 uint8_t pulseShortIntervalCount = 0;
@@ -100,9 +148,11 @@ void finishRebootIntentFlash() {
 
 void indicateRebootIntentArmed() {
   rebootFlashActive = true;
+
+  // Visible confirmation, then restore solid-on LED
   pl.setFrequency(LED_CYCLE_256MS);
   pl.setState(LED_OFF);
-  st.setTimeout(800, &finishRebootIntentFlash);
+  st.setTimeout(400, &finishRebootIntentFlash);
 }
 
 void clearRebootPending() {
@@ -111,12 +161,11 @@ void clearRebootPending() {
 }
 
 void armRebootPending() {
+  if (rebootPending) return;
+
   rebootPending = true;
   rebootPendingArmedMs = millis();
-
-  // Debug mode: hold LED blinking instead of quick blip
-  pl.setFrequency(LED_CYCLE_256MS);
-  pl.setState(LED_BLINKING);
+  indicateRebootIntentArmed();
 }
 
 void pollRebootPendingTimeout() {
@@ -172,7 +221,7 @@ void delayedPowerOffCheck() {
   }
 
   // Default behavior is legacy: Pi-down => power off
-  turnPowerSupplyOff();//#TEST
+  turnPowerSupplyOff();
 }
 
 void handleButtonPress() {
@@ -200,7 +249,6 @@ void handleButtonPress() {
     }
   } else {
     // short press while already on = normal shutdown request
-    // this is NOT reboot intent
     clearRebootPending();
     markStateOff();
 
@@ -210,7 +258,7 @@ void handleButtonPress() {
     RPI_SHUTDOWN_REQUEST;
 
     if (rpiBootUpDetectionFailure) {
-      turnPowerSupplyOff();//#TEST
+      turnPowerSupplyOff();
     }
   }
 }
@@ -242,6 +290,8 @@ void rpiUp() {
 }
 
 void turnPowerSupplyOff() {
+  markStateOff();
+  
   pl.setState(LED_OFF);
   RPI_SHUTDOWN_REQUEST_CLEAR;
   POWER_SUPPLY_OFF;
@@ -275,14 +325,10 @@ void rpiDown() {
 // -----------------------------------------------------------------------------
 
 void rpiEdge(bool rpiIsUpNow) {
-  if (!systemTurnedOn) return;//#TEST
+  // Production guard: only care once the ATtiny believes the system is on.
+  if (!systemTurnedOn) return;
 
   unsigned long now = millis();
-
-  // Ignore meaningless low edges before the Pi has ever been seen up.
-  if (!systemIsUp && !rpiIsUpNow) {
-    return;
-  }
 
   if (!pulseSeqActive) {
     pulseSeqActive = true;
@@ -306,7 +352,7 @@ void rpiEdge(bool rpiIsUpNow) {
       return;
     }
 
-    // If we got a non-long interval instead, restart sequence from here.
+    // Restart sequence from this edge.
     pulseSeqActive = true;
     pulseSawLongFirst = false;
     pulseShortIntervalCount = 0;
@@ -320,10 +366,16 @@ void rpiEdge(bool rpiIsUpNow) {
   // After the long-first interval, count good short intervals.
   if (dt >= NORMAL_EDGE_MIN_MS && dt <= NORMAL_EDGE_MAX_MS) {
     pulseShortIntervalCount++;
+
+    // Greedy detection: arm immediately once enough short intervals are seen.
+    if (pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT) {
+      armRebootPending();
+      resetPulseSequence();
+    }
     return;
   }
 
-  // Any bad interval weakens confidence.
+  // Invalid interval
   pulseInvalidIntervalCount++;
 
   // Too much garbage => abandon and restart from this edge.
@@ -338,49 +390,13 @@ void rpiEdge(bool rpiIsUpNow) {
   }
 }
 
-/*
 void pollPulseDecoder() {
   if (!pulseSeqActive) return;
 
   unsigned long now = millis();
   if ((now - pulseLastEdgeMs) < PULSE_SEQUENCE_TIMEOUT_MS) return;
 
-  bool validSequence =
-      pulseSawLongFirst &&
-      pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT &&
-      pulseInvalidIntervalCount <= MAX_INVALID_INTERVALS;
-
-  if (validSequence) {
-    armRebootPending();
-  }
-
-  resetPulseSequence();
-}*/
-
-//#TEST
-void pollPulseDecoder() {
-  if (!pulseSeqActive) return;
-
-  unsigned long now = millis();
-  if ((now - pulseLastEdgeMs) < PULSE_SEQUENCE_TIMEOUT_MS) return;
-
-  // Debug: every completed pulse sequence flips the LED mode
-  pulseDebugBlinking = !pulseDebugBlinking;
-  pl.setFrequency(LED_CYCLE_1S);
-  pl.setState(pulseDebugBlinking ? LED_BLINKING : LED_ON);
-
-  // Normal decoder logic can stay, or you can temporarily return here
-  // if you only want to test whether a sequence is being seen at all.
-
-  bool validSequence =
-      pulseSawLongFirst &&
-      pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT &&
-      pulseInvalidIntervalCount <= MAX_INVALID_INTERVALS;
-
-  if (validSequence) {
-    armRebootPending();
-  }
-
+  // Partial / abandoned sequence: discard it.
   resetPulseSequence();
 }
 
@@ -442,6 +458,7 @@ void setup() {
 void loop() {
   pollRunningStatePersistence();
   pollLongPressForceOff();
+  pollRebootPendingTimeout();
   pl.thread();
   hw.thread();
   st.thread();
