@@ -91,15 +91,6 @@ Effect:
 - power is kept on
 - if no Pi-down follows, the arm times out
 
-### Why the single-pulse design was chosen
-
-The earlier multi-pulse decoder proved too fragile in practice. The single long low pulse is:
-
-- easier to generate reliably on the Pi
-- easier to inspect on a scope
-- easier for the ATtiny to decode
-- easier to distinguish from normal steady-high behaviour
-
 ## Raspberry Pi integration
 
 ## New service: `powerblockenhanced`
