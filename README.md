@@ -1,237 +1,162 @@
 # PowerBlockExtended
 
-PowerBlockExtended extends the PetRockBlock PowerBlock with an updated ATtiny85 firmware and a Raspberry Pi side integration that aims to preserve the original PowerBlock experience while adding:
+PowerBlockExtended extends the PetRockBlock PowerBlock with updated ATtiny85 firmware and a Raspberry Pi service providing reliable power control and reboot handling.
 
-- **EEPROM-based restore-after-power-loss**
-- **Reboot without cutting power** using a reboot-intent signal on BCM17 → PB3
-- A new **`powerblockenhanced`** Raspberry Pi service that replaces the original `powerblock.service`
+## Features
 
-## Current status
+- Power on via front button  
+- Graceful shutdown via button  
+- Long-press hard power off  
+- Restore previous power state after power loss (EEPROM)  
+- Reboot without cutting power  
+- systemd-based Raspberry Pi service  
+- Automatic reboot detection across all reboot methods  
 
-The firmware and Raspberry Pi service currently support:
+---
 
-- Button power on
-- Button shutdown request
-- Long-press hard power off
-- EEPROM power-state restore
-- Manual reboot-intent signaling from the Pi service
-- A persistent BCM17 holder process so service restarts do not immediately drop the Pi-up signal
-
-### Current reboot integration status
-
-At the moment, reboot intent is working when it is triggered through the new service, for example by:
-
-```bash
-sudo systemctl kill --kill-whom=main -s SIGUSR1 powerblockenhanced.service
-```
-
-or:
-
-```bash
-sudo systemctl start powerblockenhanced-pulse.service
-```
-
-That means the **Pi-side pulse generation path is working**.
-
-Automatic integration for **all** reboot paths, especially GUI reboot, is **not yet finalized** in this branch. A desktop GUI reboot may still look like a shutdown to the ATtiny if reboot intent is not sent first.
-
-## Design summary
-
-## ATtiny85 firmware
+## ATtiny85 Firmware
 
 ### Hardware mapping
 
 | ATtiny pin | Port | Function |
-| --- | ---: | --- |
-| 5 | PB0 | Front button input (active low) |
+|---|---|---|
+| 5 | PB0 | Front button input |
 | 6 | PB1 | LED |
-| 7 | PB2 | Shutdown request to Pi (BCM18) |
-| 2 | PB3 | Pi status / reboot-intent input from Pi (BCM17) |
+| 7 | PB2 | Shutdown request → Pi (BCM18) |
+| 2 | PB3 | Pi status / reboot intent ← Pi (BCM17) |
 | 3 | PB4 | Power control |
-| 1 | PB5 | Reset / ISP |
+| 1 | PB5 | Reset |
 
-### Power control behaviour
+---
 
-- Button press while off → power on
-- Button press while running → graceful shutdown request
-- Long press (~5s) → immediate hard power off
+### Power behaviour
 
-### EEPROM restore-after-power-loss
+- Button press while off → power on  
+- Button press while running → graceful shutdown request  
+- Long press (longer than 5 seconds) → hard power off  
 
-EEPROM byte `0` stores the last intended power state:
+---
+
+### Restore after power loss
+
+The last intended power state is stored in EEPROM:
 
 | Value | Meaning |
-| --- | --- |
+|---|---|
 | `0xA5` | ON |
 | `0x00` | OFF |
 
-The firmware restores the previous ON state after unexpected input power loss.
+---
 
-### Reboot intent protocol
+### Reboot detection
 
-The firmware now uses a **single long low pulse** on **PB3**.
+Reboot is detected via a low pulse on PB3:
 
-PB3 normally sits **HIGH** while the Pi is considered up.
+- PB3 is normally HIGH  
+- A LOW pulse (180–600 ms) signals reboot intent  
+- The next Pi shutdown is treated as a reboot  
+- Power remains on  
 
-A reboot intent is armed when PB3:
+---
 
-1. goes **LOW**
-2. stays low for a valid interval
-3. returns **HIGH**
+## Raspberry Pi Service
 
-Current firmware window:
+### `powerblockenhanced.service`
 
-- minimum low pulse: `180 ms`
-- maximum low pulse: `600 ms`
+The service:
 
-Effect:
+- monitors BCM18 for shutdown requests  
+- executes a shutdown script when requested  
+- maintains signal continuity across service restarts  
 
-- a valid pulse arms a **one-shot** reboot flag
-- the **next Pi-down** is treated as reboot
-- power is kept on
-- if no Pi-down follows, the arm times out
+---
 
-## Raspberry Pi integration
+### Holder process
 
-## New service: `powerblockenhanced`
+A helper process maintains the BCM17 HIGH signal independently of the main service to prevent unintended power-off during service restarts.
 
-The old PetRockBlock setup uses a bash service that holds the status line high and polls the shutdown-request line. PowerBlockExtended keeps that overall pattern, but replaces the original service with a new native service layout.
+---
 
-### Service model
+### Reboot handling
 
-The Pi-side design is split into two roles:
+Reboot intent is generated automatically during system shutdown using a systemd shutdown hook.
 
-1. **Policy service**: `powerblockenhanced.service`
-2. **Status holder**: `powerblockenhanced-hold`
+This ensures correct behaviour for:
 
-### Why there is a dedicated holder process
+- `reboot`
+- `systemctl reboot`
+- `shutdown -r now`
+- desktop / GUI reboot  
 
-This is deliberate.
+Shutdown (`poweroff`) does not trigger reboot intent.
 
-The holder process keeps **BCM17 high** independently of the policy loop. That means:
+---
 
-- restarting the service does not immediately drop BCM17
-- package updates or service reloads are less likely to make the ATtiny think the Pi died
-- reboot intent can be sent by temporarily switching the holder to LOW, then restoring HIGH
+## GPIO Backends
 
-This mirrors the most useful behaviour observed in the original PetRockBlock setup, where a surviving `gpioset` process effectively kept the Pi-up signal asserted even after the service unit itself was considered stopped.
+Supported:
 
-### Current Raspberry Pi service behaviour
+- libgpiod v2  
+- libgpiod v1  
+- sysfs fallback  
 
-`powerblockenhanced.service`:
+The installer selects the appropriate backend automatically.
 
-- detects a GPIO backend
-- starts a holder process to keep BCM17 high
-- polls BCM18 for ATtiny shutdown requests
-- triggers the configured shutdown script when the ATtiny requests shutdown
-- can receive `SIGUSR1` to send the reboot-intent pulse
-
-`powerblockenhanced-pulse.service`:
-
-- is a simple manual helper
-- sends `SIGUSR1` to the **main** process of `powerblockenhanced.service`
-- is currently intended for manual testing and scripted use
-
-## Supported Raspberry Pi GPIO backends
-
-The new service is intended to preserve the upstream compatibility approach where possible.
-
-Current implementation supports:
-
-- `gpiod-v1`
-- `gpiod-v2`
-- `sysfs` fallback where appropriate
-
-In practice, modern Raspberry Pi OS systems are expected to use libgpiod.
-
-## Repository layout
-
-```text
-PowerBlockExtended/
-├── README.md
-├── install.sh
-├── uninstall.sh
-├── firmware/
-│   ├── flashing.md
-│   └── PowerBlockExtended/
-│       ├── PowerBlockExtended.ino
-│       ├── Interface.cpp
-│       ├── Interface.h
-│       ├── Powerled.*
-│       └── SimpleTimer.*
-└── rpi/
-    ├── powerblockenhanced
-    ├── powerblockenhanced-hold
-    ├── powerblockenhanced.service
-    ├── powerblockenhanced-pulse.service
-    └── local-install.sh
-```
+---
 
 ## Installation
 
-### 1. Flash the ATtiny85 firmware
+### 1. Flash firmware
 
-Use Arduino IDE or your preferred AVR flashing workflow.
+Flash the ATtiny85 using Arduino IDE or an AVR programmer.
 
-Typical Arduino IDE settings:
+Typical Arduino settings:
 
-- Board: `ATtiny25/45/85`
-- Chip: `ATtiny85`
-- Clock: `8 MHz internal`
-- Programmer: your ISP programmer
+- Board: ATtiny25/45/85  
+- Chip: ATtiny85  
+- Clock: 8 MHz internal  
+- Upload method: Upload Using Programmer  
 
-Use **Upload Using Programmer**.
+---
 
-See `firmware/flashing.md` for your board-specific wiring and flashing notes.
-
-### 2. Disable the old PowerBlock service
-
-Either uninstall the original service or `install.sh` disables and masks the original `powerblock.service` if it exists.
-
-This is important because the old and new services must not fight over BCM17/BCM18.
-
-### 3. Install the Raspberry Pi service
-
-Either install directly from the repository:
+### 2. Install on Raspberry Pi
 
 ```bash
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
-```
+````
 
-Or clone the repository:  
+Or:
+
 ```bash
 git clone https://github.com/andyengria/PowerBlockExtended.git
-```
-
-From the project root:
-
-```bash
 cd PowerBlockExtended
 sudo ./install.sh
 ```
 
-This installs:
+---
 
-- `/usr/local/sbin/powerblockenhanced`
-- `/usr/local/sbin/powerblockenhanced-hold`
-- `/etc/systemd/system/powerblockenhanced.service`
-- `/etc/systemd/system/powerblockenhanced-pulse.service`
+### Installed components
 
-and then:
+* `/usr/local/sbin/powerblockenhanced`
+* `/usr/local/sbin/powerblockenhanced-hold`
+* `/etc/systemd/system/powerblockenhanced.service`
+* `/usr/lib/systemd/system-shutdown/powerblockenhanced-reboot-pulse`
 
-- reloads systemd
-- enables and starts `powerblockenhanced.service`
+The service is enabled and started automatically.
 
-⚙️ Configuration
+---
 
-powerblockenhanced reads an optional configuration file:
+## Configuration
 
+Optional configuration file:
+
+```
 /etc/powerblockconfig.cfg
+```
 
-If the file is missing, sensible defaults are used automatically.
+Example:
 
-Supported options:
-```bash
+```ini
 [powerblock]
 activated=1
 statuspin=17
@@ -240,138 +165,72 @@ logging=1
 shutdownscript=/etc/powerblockswitchoff.sh
 ```
 
-Option	Description
+### Options
 
-activated	Enable (1) or disable (0) PowerBlock handling
-statuspin	BCM pin used for Pi status (default 17)
-shutdownpin	BCM pin used for shutdown request (default 18)
-logging	Enable (1) or disable (0) logging
-shutdownscript	Script executed when a shutdown is requested
+| Option         | Description                         |
+| -------------- | ----------------------------------- |
+| activated      | Enable (1) or disable (0) service   |
+| statuspin      | BCM pin used for Pi status          |
+| shutdownpin    | BCM pin used for shutdown request   |
+| logging        | Enable logging                      |
+| shutdownscript | Script executed on shutdown request |
 
-Defaults
+---
 
-If no config file is present, the service behaves as if:
-```bash
-[powerblock]
-activated=1
-statuspin=17
-shutdownpin=18
-logging=1
-shutdownscript=/etc/powerblockswitchoff.sh
-```
+## Shutdown script
 
-Notes
+The configured script is executed when a shutdown is requested.
 
-You can override only the options you need — partial configs are supported
-Reboot pulse timing is not configurable and is intentionally fixed to match the ATtiny firmware
-Invalid or missing values fall back to defaults
+Default:
 
-🔌 Shutdown Script
-
-When the ATtiny requests a shutdown (via BCM18), the service executes:
-```bash
-/etc/powerblockswitchoff.sh
-```
-
-Default script
-
-A basic script is installed automatically:
 ```bash
 #!/bin/bash
 exec /sbin/shutdown -h now "PowerBlockEnhanced requested shutdown"
 ```
 
-Customisation
+Custom scripts can be used to perform additional actions before shutdown.
 
-You can replace this script to perform custom actions before shutdown, for example:
-
-- stopping services
-- syncing data
-- logging events
-- triggering external hardware
-
-Just ensure the script eventually powers down the system, e.g.:
-```bash
-shutdown -h now
-```
-
-## Uninstall
-
-To remove the PowerBlockEnhanced service from Raspberry Pi side service:
-
-```bash
-sudo ./uninstall.sh
-```
-
-This:
-
-- stops and disables `powerblockenhanced.service`
-- removes the installed unit files and helper binaries
-- reloads systemd
-
-It also uninstalls the manual pulse helper unit.
+---
 
 ## Operation
 
-### Normal operation
+| Action            | Result           |
+| ----------------- | ---------------- |
+| Button press      | Shutdown request |
+| Long press        | Hard power off   |
+| `shutdown -h now` | Power off        |
+| `reboot`          | Power remains on |
 
-| Action | Result |
-| --- | --- |
-| Button press while off | Power on |
-| Button press while running | Shutdown request |
-| Long button hold | Hard power off |
-| `shutdown -h now` | Power off |
+---
 
-### Manual reboot-intent test
+## Service behaviour
 
-```bash
-sudo systemctl start powerblockenhanced-pulse.service
-```
-
-or:
-
-```bash
-sudo systemctl kill --kill-whom=main -s SIGUSR1 powerblockenhanced.service
-```
-
-Expected:
-
-- BCM17 goes LOW briefly, then HIGH again
-- the ATtiny LED indicates reboot-intent arm
-
-### Service continuity test
-
-A key design goal is that restarting the policy service should not immediately drop BCM17.
-
-You can test that with:
+Restarting the service does not interrupt power:
 
 ```bash
 sudo systemctl restart powerblockenhanced.service
 ```
 
-Expected:
+---
 
-- the holder keeps BCM17 asserted high
-- the Pi should remain powered
+## Uninstall
 
-## Notes and limitations
+```bash
+sudo ./uninstall.sh
+```
 
-- The current Raspberry Pi service path is working for **manual** reboot-intent signaling.
-- Automatic reboot integration for **all** reboot entry points is still being refined.
-- GUI reboot may currently be seen as shutdown if reboot intent is not sent first.
-- The persistent holder design is intentional and is part of the safety model.
+Removes service, binaries, and reboot hook.
+
+Configuration and user scripts are preserved.
+
+---
 
 ## Summary
 
-PowerBlockExtended now uses:
+PowerBlockExtended provides:
 
-- a simpler and more reliable ATtiny reboot detector
-- a dedicated Pi-side holder process for BCM17
-- a new `powerblockenhanced` service in place of the original `powerblock.service`
+* reliable power control
+* automatic reboot handling
+* compatibility with modern Raspberry Pi systems
+* simple configuration and deployment
 
-The project has moved away from the earlier `ExecStopPost=` drop-in approach and away from the older multi-pulse reboot protocol.
-
-The current branch should be understood as:
-
-- **firmware and manual Pi-side reboot signaling are working**
-- **automatic GUI/desktop reboot integration is the remaining integration task**

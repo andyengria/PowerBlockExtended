@@ -1,8 +1,0 @@
-[Unit]
-Description=Tell PowerBlockEnhanced to send reboot-intent pulse
-After=powerblockenhanced.service
-Requires=powerblockenhanced.service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/systemctl kill --kill-whom=main -s SIGUSR1 powerblockenhanced.service

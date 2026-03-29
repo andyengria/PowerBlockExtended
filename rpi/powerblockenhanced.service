@@ -13,6 +13,9 @@ RestartSec=200ms
 User=root
 Group=root
 
+RuntimeDirectory=powerblockenhanced
+RuntimeDirectoryMode=0755
+
 KillSignal=SIGTERM
 TimeoutStopSec=5
 

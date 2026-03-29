@@ -2,7 +2,7 @@
 set -u
 
 VERSION_MAJOR=0
-VERSION_MINOR=2
+VERSION_MINOR=3
 VERSION_PATCH=0
 
 BASE_GPIO_PATH=/sys/class/gpio
@@ -17,7 +17,6 @@ DEFAULT_SHUTDOWN_PIN=18
 DEFAULT_LOGGING=1
 DEFAULT_ACTIVATED=1
 
-REBOOT_PULSE_SECONDS=0.25
 MAIN_LOOP_SLEEP=1
 
 GPIO_BACKEND="sysfs"   # sysfs | gpiod-v1 | gpiod-v2
@@ -29,14 +28,11 @@ SHUTDOWN_PIN=$DEFAULT_SHUTDOWN_PIN
 DO_LOGGING=$DEFAULT_LOGGING
 
 isShutdownRunning=0
-rebootIntentRequested=0
 terminateRequested=0
 
 RUNDIR=/run/powerblockenhanced
 HOLDER_PID_FILE="$RUNDIR/holder.pid"
 HOLDER_LEVEL_FILE="$RUNDIR/holder.level"
-
-# ------------------- FUNCTION DEFINITIONS -------------------
 
 iniget() {
     if [[ $# -lt 2 || ! -f $1 ]]; then
@@ -44,8 +40,8 @@ iniget() {
     fi
 
     local inifile=$1
-    if [ "$2" == "--list" ]; then
-        for section in $(grep "\[" "$inifile" | sed -e "s#\[##g" -e "s#\]##g"); do
+    if [ "$2" = "--list" ]; then
+        for section in $(grep "\[" "$inifile" | sed -e 's#\[##g' -e 's#\]##g'); do
             echo "$section"
         done
         return 0
@@ -91,6 +87,7 @@ checkForRoot() {
 load_config() {
     if [ -f "$CONFIGFILE" ]; then
         local tmp
+
         tmp=$(iniget "$CONFIGFILE" powerblock activated || true)
         [ -n "$tmp" ] && IS_ACTIVATED="$tmp"
 
@@ -102,11 +99,16 @@ load_config() {
 
         tmp=$(iniget "$CONFIGFILE" powerblock logging || true)
         [ -n "$tmp" ] && DO_LOGGING="$tmp"
+
+        # ✅ THIS IS THE MISSING PIECE
+        tmp=$(iniget "$CONFIGFILE" powerblock shutdownscript || true)
+        [ -n "$tmp" ] && SHUTDOWNSCRIPT="$tmp"
     fi
 
     echo "Shutdown is $( [ "$IS_ACTIVATED" = "0" ] && echo DEACTIVATED || echo ACTIVATED )" | write_log
     echo "Shutdown Pin is $SHUTDOWN_PIN" | write_log
     echo "Status Pin is $STATUS_PIN" | write_log
+    echo "Shutdown Script is $SHUTDOWNSCRIPT" | write_log
 }
 
 checkKernel() {
@@ -230,8 +232,6 @@ read_holder_level() {
 start_holder() {
     local level="$1"
 
-    mkdir -p "$RUNDIR"
-
     /usr/local/sbin/powerblockenhanced-hold "$GPIO_BACKEND" "$chip" "$STATUS_PIN" "$level" &
     local pid=$!
 
@@ -271,16 +271,6 @@ ensure_high_holder() {
     start_holder "$STATE_ON"
 }
 
-send_reboot_pulse() {
-    echo "Sending reboot intent pulse on BCM$STATUS_PIN" | write_log
-
-    stop_holder
-    start_holder "$STATE_OFF"
-    sleep "$REBOOT_PULSE_SECONDS"
-    stop_holder
-    start_holder "$STATE_ON"
-}
-
 get_shutdown_pin_value() {
     case "$GPIO_BACKEND" in
         gpiod-v2)
@@ -299,27 +289,26 @@ get_shutdown_pin_value() {
 }
 
 doShutdown() {
-    exec "$SHUTDOWNSCRIPT" &
-}
+    if [ ! -x "$SHUTDOWNSCRIPT" ]; then
+        echo "ERROR: shutdown script not executable: $SHUTDOWNSCRIPT" | write_log
+        return
+    fi
 
-request_reboot_intent() {
-    rebootIntentRequested=1
+    exec "$SHUTDOWNSCRIPT" &
 }
 
 request_terminate() {
     terminateRequested=1
 }
 
-trap request_reboot_intent SIGUSR1
 trap request_terminate SIGINT SIGQUIT SIGABRT SIGTERM
 
 main() {
     checkForRoot
+    mkdir -p "$RUNDIR"
     load_config
     detect_gpio_backend
     init_shutdown_pin
-
-    mkdir -p "$RUNDIR"
 
     echo "Starting PowerBlockEnhanced driver, version $VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH" | write_log
 
@@ -332,11 +321,6 @@ main() {
         fi
 
         ensure_high_holder
-
-        if [ "$rebootIntentRequested" -eq 1 ]; then
-            rebootIntentRequested=0
-            send_reboot_pulse
-        fi
 
         if [[ "$IS_ACTIVATED" != 0 ]]; then
             currentValue=$(get_shutdown_pin_value || echo 0)
