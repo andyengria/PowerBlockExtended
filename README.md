@@ -222,6 +222,66 @@ and then:
 - reloads systemd
 - enables and starts `powerblockenhanced.service`
 
+⚙️ Configuration
+
+powerblockenhanced reads an optional configuration file:
+
+/etc/powerblockconfig.cfg
+
+If the file is missing, sensible defaults are used automatically.
+
+Supported options
+[powerblock]
+activated=1
+statuspin=17
+shutdownpin=18
+logging=1
+shutdownscript=/etc/powerblockswitchoff.sh
+Option	Description
+activated	Enable (1) or disable (0) PowerBlock handling
+statuspin	BCM pin used for Pi status (default 17)
+shutdownpin	BCM pin used for shutdown request (default 18)
+logging	Enable (1) or disable (0) logging
+shutdownscript	Script executed when a shutdown is requested
+Defaults
+
+If no config file is present, the service behaves as if:
+
+[powerblock]
+activated=1
+statuspin=17
+shutdownpin=18
+logging=1
+shutdownscript=/etc/powerblockswitchoff.sh
+Notes
+You can override only the options you need — partial configs are supported
+Reboot pulse timing is not configurable and is intentionally fixed to match the ATtiny firmware
+Invalid or missing values fall back to defaults
+
+🔌 Shutdown Script
+
+When the ATtiny requests a shutdown (via BCM18), the service executes:
+
+/etc/powerblockswitchoff.sh
+Default script
+
+A basic script is installed automatically:
+
+#!/bin/bash
+exec /sbin/shutdown -h now "PowerBlockEnhanced requested shutdown"
+Customisation
+
+You can replace this script to perform custom actions before shutdown, for example:
+
+stopping services
+syncing data
+logging events
+triggering external hardware
+
+Just ensure the script eventually powers down the system, e.g.:
+
+shutdown -h now
+
 ## Uninstall
 
 To remove the PowerBlockEnhanced service from Raspberry Pi side service:
