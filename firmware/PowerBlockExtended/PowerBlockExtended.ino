@@ -80,7 +80,7 @@
 #define REBOOT_LOW_PULSE_MIN_MS         180
 #define REBOOT_LOW_PULSE_MAX_MS         600
 
-#define REBOOT_PENDING_TIMEOUT_MS     60000UL
+#define REBOOT_PENDING_TIMEOUT_MS     180000UL
 
 Powerled pl;
 Interface hw;
