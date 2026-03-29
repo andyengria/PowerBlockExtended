@@ -184,7 +184,13 @@ Use **Upload Using Programmer**.
 
 See `firmware/flashing.md` for your board-specific wiring and flashing notes.
 
-### 2. Install the Raspberry Pi service
+### 2. Disable the old PowerBlock service
+
+Either uninstall the original service or `install.sh` disables and masks the original `powerblock.service` if it exists.
+
+This is important because the old and new services must not fight over BCM17/BCM18.
+
+### 3. Install the Raspberry Pi service
 
 Either install directly from the repository:
 
@@ -215,12 +221,6 @@ and then:
 
 - reloads systemd
 - enables and starts `powerblockenhanced.service`
-
-### 3. Disable the old PowerBlock service
-
-Either uninstall the original service or `install.sh` disables and masks the original `powerblock.service` if it exists.
-
-This is important because the old and new services must not fight over BCM17/BCM18.
 
 ## Uninstall
 
