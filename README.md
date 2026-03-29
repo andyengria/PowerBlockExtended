@@ -238,14 +238,16 @@ statuspin=17
 shutdownpin=18
 logging=1
 shutdownscript=/etc/powerblockswitchoff.sh
+```
+
 Option	Description
 activated	Enable (1) or disable (0) PowerBlock handling
 statuspin	BCM pin used for Pi status (default 17)
 shutdownpin	BCM pin used for shutdown request (default 18)
 logging	Enable (1) or disable (0) logging
 shutdownscript	Script executed when a shutdown is requested
+
 Defaults
-```
 
 If no config file is present, the service behaves as if:
 ```bash
