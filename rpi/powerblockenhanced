@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+set -u
+
+VERSION_MAJOR=0
+VERSION_MINOR=2
+VERSION_PATCH=0
+
+BASE_GPIO_PATH=/sys/class/gpio
+STATE_ON="1"
+STATE_OFF="0"
+
+CONFIGFILE=/etc/powerblockconfig.cfg
+SHUTDOWNSCRIPT=/etc/powerblockswitchoff.sh
+
+DEFAULT_STATUS_PIN=17
+DEFAULT_SHUTDOWN_PIN=18
+DEFAULT_LOGGING=1
+DEFAULT_ACTIVATED=1
+
+REBOOT_PULSE_SECONDS=0.25
+MAIN_LOOP_SLEEP=1
+
+GPIO_BACKEND="sysfs"   # sysfs | gpiod-v1 | gpiod-v2
+chip=0
+
+IS_ACTIVATED=$DEFAULT_ACTIVATED
+STATUS_PIN=$DEFAULT_STATUS_PIN
+SHUTDOWN_PIN=$DEFAULT_SHUTDOWN_PIN
+DO_LOGGING=$DEFAULT_LOGGING
+
+isShutdownRunning=0
+rebootIntentRequested=0
+terminateRequested=0
+
+RUNDIR=/run/powerblockenhanced
+HOLDER_PID_FILE="$RUNDIR/holder.pid"
+HOLDER_LEVEL_FILE="$RUNDIR/holder.level"
+
+# ------------------- FUNCTION DEFINITIONS -------------------
+
+iniget() {
+    if [[ $# -lt 2 || ! -f $1 ]]; then
+        return 1
+    fi
+
+    local inifile=$1
+    if [ "$2" == "--list" ]; then
+        for section in $(grep "\[" "$inifile" | sed -e "s#\[##g" -e "s#\]##g"); do
+            echo "$section"
+        done
+        return 0
+    fi
+
+    local section=$2
+    local key=""
+    [ $# -eq 3 ] && key=$3
+
+    local lines
+    lines=$(awk '/\[/{prefix=$0; next} $1{print prefix $0}' "$inifile")
+
+    for line in $lines; do
+        if [[ "$line" = \[$section\]* ]]; then
+            local keyval
+            keyval=$(echo "$line" | sed -e "s/^\[$section\]//")
+            if [[ -z "$key" ]]; then
+                echo "$keyval"
+            else
+                if [[ "$keyval" = $key=* ]]; then
+                    echo "$keyval" | sed -e "s/^$key=//"
+                fi
+            fi
+        fi
+    done
+}
+
+write_log() {
+    if [[ ${DO_LOGGING:-0} != 0 ]]; then
+        while read -r text; do
+            logger -t powerblockenhanced "$text"
+        done
+    fi
+}
+
+checkForRoot() {
+    if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+        echo "ERROR: powerblockenhanced must be run as root." >&2
+        exit 1
+    fi
+}
+
+load_config() {
+    if [ -f "$CONFIGFILE" ]; then
+        local tmp
+        tmp=$(iniget "$CONFIGFILE" powerblock activated || true)
+        [ -n "$tmp" ] && IS_ACTIVATED="$tmp"
+
+        tmp=$(iniget "$CONFIGFILE" powerblock statuspin || true)
+        [ -n "$tmp" ] && STATUS_PIN="$tmp"
+
+        tmp=$(iniget "$CONFIGFILE" powerblock shutdownpin || true)
+        [ -n "$tmp" ] && SHUTDOWN_PIN="$tmp"
+
+        tmp=$(iniget "$CONFIGFILE" powerblock logging || true)
+        [ -n "$tmp" ] && DO_LOGGING="$tmp"
+    fi
+
+    echo "Shutdown is $( [ "$IS_ACTIVATED" = "0" ] && echo DEACTIVATED || echo ACTIVATED )" | write_log
+    echo "Shutdown Pin is $SHUTDOWN_PIN" | write_log
+    echo "Status Pin is $STATUS_PIN" | write_log
+}
+
+checkKernel() {
+    local current_kernel
+    current_kernel=$(uname --kernel-release | cut --delimiter="." --fields=1-2)
+    local current_major
+    current_major=$(echo "$current_kernel" | cut --delimiter="." --fields=1)
+    local current_minor
+    current_minor=$(echo "$current_kernel" | cut --delimiter="." --fields=2)
+
+    local allowed_kernel="6.6"
+    local allowed_major
+    allowed_major=$(echo "$allowed_kernel" | cut --delimiter="." --fields=1)
+    local allowed_minor
+    allowed_minor=$(echo "$allowed_kernel" | cut --delimiter="." --fields=2)
+
+    if [ "$current_major" -ge "$allowed_major" ] && [ "$current_minor" -ge "$allowed_minor" ]; then
+        return 0
+    fi
+    return 1
+}
+
+detect_gpio_backend() {
+    local gpio_tools_available=false
+    local gpiod_version=""
+    local gpiod_major="0"
+
+    if command -v gpiodetect >/dev/null 2>&1 && command -v gpioset >/dev/null 2>&1 && command -v gpioget >/dev/null 2>&1; then
+        gpio_tools_available=true
+    fi
+
+    local model_string
+    model_string=$(grep -m1 'Model' /proc/cpuinfo | cut -d: -f2)
+    local model
+    model=$(echo "$model_string" | grep -oE 'Pi [0-9]+' | grep -oE '[0-9]+' || true)
+
+    if [ -z "$model" ]; then
+        model=$(echo "$model_string" | grep -oE 'Zero [0-9]+' | grep -oE '[0-9]+' || true)
+    fi
+    if [ -z "$model" ]; then
+        model=$(echo "$model_string" | grep -oE 'Compute Module [0-9]+' | grep -oE '[0-9]+' || true)
+    fi
+    if [ -z "$model" ]; then
+        model=0
+    fi
+
+    if [ "$model" -ge 5 ] 2>/dev/null; then
+        chip=4
+    else
+        chip=0
+    fi
+
+    if $gpio_tools_available; then
+        if [ "$chip" -ne 4 ]; then
+            if ! checkKernel; then
+                gpio_tools_available=false
+            fi
+        fi
+    fi
+
+    if $gpio_tools_available; then
+        gpiod_version=$(gpioset --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+        gpiod_major=$(echo "${gpiod_version:-0}" | cut -d. -f1)
+        if [ "${gpiod_major:-0}" -ge 2 ] 2>/dev/null; then
+            GPIO_BACKEND="gpiod-v2"
+        else
+            GPIO_BACKEND="gpiod-v1"
+        fi
+    else
+        GPIO_BACKEND="sysfs"
+    fi
+
+    echo "Detected backend: $GPIO_BACKEND on gpiochip$chip" | write_log
+}
+
+sysfs_export_if_needed() {
+    local pin="$1"
+    if [ ! -d "$BASE_GPIO_PATH/gpio$pin" ]; then
+        echo "$pin" > "$BASE_GPIO_PATH/export"
+        sleep 0.1
+    fi
+}
+
+sysfs_set_direction_input() {
+    local pin="$1"
+    sysfs_export_if_needed "$pin"
+    echo "in" > "$BASE_GPIO_PATH/gpio$pin/direction"
+}
+
+sysfs_read() {
+    local pin="$1"
+    cat "$BASE_GPIO_PATH/gpio$pin/value"
+}
+
+init_shutdown_pin() {
+    if [ "$GPIO_BACKEND" = "sysfs" ]; then
+        sysfs_set_direction_input "$SHUTDOWN_PIN"
+    fi
+}
+
+holder_pid_is_alive() {
+    if [ ! -f "$HOLDER_PID_FILE" ]; then
+        return 1
+    fi
+
+    local pid
+    pid=$(cat "$HOLDER_PID_FILE" 2>/dev/null || true)
+    [ -z "$pid" ] && return 1
+
+    kill -0 "$pid" 2>/dev/null
+}
+
+read_holder_level() {
+    if [ -f "$HOLDER_LEVEL_FILE" ]; then
+        cat "$HOLDER_LEVEL_FILE" 2>/dev/null || true
+    else
+        echo ""
+    fi
+}
+
+start_holder() {
+    local level="$1"
+
+    mkdir -p "$RUNDIR"
+
+    /usr/local/sbin/powerblockenhanced-hold "$GPIO_BACKEND" "$chip" "$STATUS_PIN" "$level" &
+    local pid=$!
+
+    sleep 0.05
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "ERROR: failed to start holder at level $level" | write_log
+        exit 1
+    fi
+
+    echo "$pid" > "$HOLDER_PID_FILE"
+    echo "$level" > "$HOLDER_LEVEL_FILE"
+    echo "Started holder PID $pid level $level" | write_log
+}
+
+stop_holder() {
+    if holder_pid_is_alive; then
+        local pid
+        pid=$(cat "$HOLDER_PID_FILE")
+        kill "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        echo "Stopped holder PID $pid" | write_log
+    fi
+
+    rm -f "$HOLDER_PID_FILE" "$HOLDER_LEVEL_FILE"
+}
+
+ensure_high_holder() {
+    if holder_pid_is_alive; then
+        local level
+        level=$(read_holder_level)
+        if [ "$level" = "$STATE_ON" ]; then
+            return
+        fi
+        stop_holder
+    fi
+
+    start_holder "$STATE_ON"
+}
+
+send_reboot_pulse() {
+    echo "Sending reboot intent pulse on BCM$STATUS_PIN" | write_log
+
+    stop_holder
+    start_holder "$STATE_OFF"
+    sleep "$REBOOT_PULSE_SECONDS"
+    stop_holder
+    start_holder "$STATE_ON"
+}
+
+get_shutdown_pin_value() {
+    case "$GPIO_BACKEND" in
+        gpiod-v2)
+            gpioget --numeric -c "$chip" "$SHUTDOWN_PIN" 2>/dev/null
+            ;;
+        gpiod-v1)
+            gpioget "$chip" "$SHUTDOWN_PIN" 2>/dev/null
+            ;;
+        sysfs)
+            sysfs_read "$SHUTDOWN_PIN"
+            ;;
+        *)
+            echo 0
+            ;;
+    esac
+}
+
+doShutdown() {
+    exec "$SHUTDOWNSCRIPT" &
+}
+
+request_reboot_intent() {
+    rebootIntentRequested=1
+}
+
+request_terminate() {
+    terminateRequested=1
+}
+
+trap request_reboot_intent SIGUSR1
+trap request_terminate SIGINT SIGQUIT SIGABRT SIGTERM
+
+main() {
+    checkForRoot
+    load_config
+    detect_gpio_backend
+    init_shutdown_pin
+
+    mkdir -p "$RUNDIR"
+
+    echo "Starting PowerBlockEnhanced driver, version $VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH" | write_log
+
+    ensure_high_holder
+
+    while true; do
+        if [ "$terminateRequested" -eq 1 ]; then
+            echo "Policy service exiting; leaving holder in place." | write_log
+            break
+        fi
+
+        ensure_high_holder
+
+        if [ "$rebootIntentRequested" -eq 1 ]; then
+            rebootIntentRequested=0
+            send_reboot_pulse
+        fi
+
+        if [[ "$IS_ACTIVATED" != 0 ]]; then
+            currentValue=$(get_shutdown_pin_value || echo 0)
+            if [ "$currentValue" = "$STATE_ON" ]; then
+                if [ "$isShutdownRunning" -eq 0 ]; then
+                    echo "Shutdown signal observed on BCM$SHUTDOWN_PIN" | write_log
+                    doShutdown
+                    isShutdownRunning=1
+                fi
+            fi
+        fi
+
+        sleep "$MAIN_LOOP_SLEEP"
+    done
+
+    exit 0
+}
+
+main "$@"

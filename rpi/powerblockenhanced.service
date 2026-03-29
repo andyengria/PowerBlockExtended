@@ -1,0 +1,25 @@
+[Unit]
+Description=PowerBlockEnhanced GPIO daemon
+After=local-fs.target dbus.service
+Wants=dbus.service
+Conflicts=powerblock.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/powerblockenhanced
+Restart=on-failure
+RestartSec=200ms
+
+User=root
+Group=root
+
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Dedicated BCM17 holder.
+# Holds one pin at one level until killed.
+
+if [ "$#" -lt 4 ]; then
+    echo "Usage: $0 <backend> <chip> <pin> <level>" >&2
+    exit 1
+fi
+
+BACKEND="$1"
+CHIP="$2"
+PIN="$3"
+LEVEL="$4"
+
+BASE_GPIO_PATH=/sys/class/gpio
+
+sysfs_export_if_needed() {
+    local pin="$1"
+    if [ ! -d "$BASE_GPIO_PATH/gpio$pin" ]; then
+        echo "$pin" > "$BASE_GPIO_PATH/export"
+        sleep 0.1
+    fi
+}
+
+sysfs_set_direction_output() {
+    local pin="$1"
+    sysfs_export_if_needed "$pin"
+    echo "out" > "$BASE_GPIO_PATH/gpio$pin/direction"
+}
+
+sysfs_write() {
+    local pin="$1"
+    local value="$2"
+    echo "$value" > "$BASE_GPIO_PATH/gpio$pin/value"
+}
+
+case "$BACKEND" in
+    sysfs)
+        sysfs_set_direction_output "$PIN"
+        sysfs_write "$PIN" "$LEVEL"
+        # Stay alive so caller can manage us as a holder process.
+        while true; do sleep 3600; done
+        ;;
+    gpiod-v1)
+        exec gpioset "$CHIP" "$PIN=$LEVEL"
+        ;;
+    gpiod-v2)
+        exec gpioset -c "$CHIP" "$PIN=$LEVEL"
+        ;;
+    *)
+        echo "Unknown backend: $BACKEND" >&2
+        exit 1
+        ;;
+esac
