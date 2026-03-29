@@ -104,7 +104,7 @@ The earlier multi-pulse decoder proved too fragile in practice. The single long 
 
 ## New service: `powerblockenhanced`
 
-The old PetRockBlock setup uses a bash service that holds the status line high and polls the shutdown-request line. PowerBlockExtended keeps that overall pattern, but replaces the legacy service with a new native service layout.
+The old PetRockBlock setup uses a bash service that holds the status line high and polls the shutdown-request line. PowerBlockExtended keeps that overall pattern, but replaces the original service with a new native service layout.
 
 ### Service model
 
@@ -123,7 +123,7 @@ The holder process keeps **BCM17 high** independently of the policy loop. That m
 - package updates or service reloads are less likely to make the ATtiny think the Pi died
 - reboot intent can be sent by temporarily switching the holder to LOW, then restoring HIGH
 
-This mirrors the most useful behaviour observed in the legacy PetRockBlock setup, where a surviving `gpioset` process effectively kept the Pi-up signal asserted even after the service unit itself was considered stopped.
+This mirrors the most useful behaviour observed in the original PetRockBlock setup, where a surviving `gpioset` process effectively kept the Pi-up signal asserted even after the service unit itself was considered stopped.
 
 ### Current Raspberry Pi service behaviour
 
@@ -227,13 +227,13 @@ and then:
 
 ### 3. Disable the old PowerBlock service
 
-`install.sh` disables and masks the legacy `powerblock.service` if it exists.
+Either uninstall the original service or `install.sh` disables and masks the original `powerblock.service` if it exists.
 
 This is important because the old and new services must not fight over BCM17/BCM18.
 
 ## Uninstall
 
-To remove the Raspberry Pi side service:
+To remove the PowerBlockEnhanced service from Raspberry Pi side service:
 
 ```bash
 sudo ./uninstall.sh
@@ -303,7 +303,7 @@ PowerBlockExtended now uses:
 
 - a simpler and more reliable ATtiny reboot detector
 - a dedicated Pi-side holder process for BCM17
-- a new `powerblockenhanced` service in place of the legacy `powerblock.service`
+- a new `powerblockenhanced` service in place of the original `powerblock.service`
 
 The project has moved away from the earlier `ExecStopPost=` drop-in approach and away from the older multi-pulse reboot protocol.
 
