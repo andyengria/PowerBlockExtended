@@ -4,7 +4,7 @@ PowerBlockExtended extends the PetRockBlock PowerBlock with an updated ATtiny85 
 
 - **EEPROM-based restore-after-power-loss**
 - **Reboot without cutting power** using a reboot-intent signal on BCM17 → PB3
-- A new **`powerblockenhanced`** Raspberry Pi service that replaces the legacy `powerblock.service`
+- A new **`powerblockenhanced`** Raspberry Pi service that replaces the original `powerblock.service`
 
 ## Current status
 
