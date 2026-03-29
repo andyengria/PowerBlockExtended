@@ -1,49 +1,63 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
+SERVICE_NAME="powerblockenhanced.service"
+PULSE_SERVICE_NAME="powerblockenhanced-pulse.service"
+LEGACY_SERVICE_NAME="powerblock.service"
 
-# Detect if we are running from repo root
-if [ ! -d "rpi" ]; then
-    echo "[INFO] Not running from repo — bootstrapping install..."
+BIN_MAIN_DST="/usr/local/sbin/powerblockenhanced"
+BIN_HOLD_DST="/usr/local/sbin/powerblockenhanced-hold"
+UNIT_MAIN_DST="/etc/systemd/system/powerblockenhanced.service"
+UNIT_PULSE_DST="/etc/systemd/system/powerblockenhanced-pulse.service"
 
-    TMP_DIR=$(mktemp -d /tmp/powerblockextended.XXXXXX)
+RUNTIME_DIR="/run/powerblockenhanced"
 
-    echo "[INFO] Cloning repository into $TMP_DIR..."
-    git clone "$REPO_URL" "$TMP_DIR"
+require_root() {
+  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
+    echo "Please run as root: sudo ./uninstall.sh" >&2
+    exit 1
+  fi
+}
 
-    cd "$TMP_DIR"
+main() {
+  require_root
 
-    echo "[INFO] Re-running install from repo..."
-    sudo bash ./install.sh
+  echo "Stopping and disabling PowerBlockEnhanced..."
+  systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
+  systemctl disable --now "$PULSE_SERVICE_NAME" 2>/dev/null || true
 
-    echo "[INFO] Cleaning up..."
-    rm -rf "$TMP_DIR"
+  echo "Removing installed files..."
+  rm -f "$BIN_MAIN_DST"
+  rm -f "$BIN_HOLD_DST"
+  rm -f "$UNIT_MAIN_DST"
+  rm -f "$UNIT_PULSE_DST"
 
-    exit 0
-fi
+  echo "Cleaning runtime state..."
+  rm -rf "$RUNTIME_DIR"
 
-echo "[INFO] Installing PowerBlockEnhanced..."
+  echo "Cleaning any lingering gpioset holders..."
+  pkill -x gpioset 2>/dev/null || true
 
-# Install binaries
-sudo install -m 0755 rpi/powerblockenhanced /usr/local/sbin/powerblockenhanced
-sudo install -m 0755 rpi/powerblockenhanced-hold /usr/local/sbin/powerblockenhanced-hold
+  echo "Reloading systemd..."
+  systemctl daemon-reload
+  systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+  systemctl reset-failed "$PULSE_SERVICE_NAME" 2>/dev/null || true
 
-# Install services
-sudo install -m 0644 rpi/powerblockenhanced.service /etc/systemd/system/powerblockenhanced.service
-sudo install -m 0644 rpi/powerblockenhanced-pulse.service /etc/systemd/system/powerblockenhanced-pulse.service
+  if systemctl list-unit-files | grep -q "^${LEGACY_SERVICE_NAME}"; then
+    echo
+    echo "Legacy ${LEGACY_SERVICE_NAME} is still available on this system."
+    echo "Re-enable it manually if you want to return to the original stack:"
+    echo "  sudo systemctl unmask ${LEGACY_SERVICE_NAME}"
+    echo "  sudo systemctl enable --now ${LEGACY_SERVICE_NAME}"
+  fi
 
-# Disable legacy service if present
-if systemctl list-unit-files | grep -q powerblock.service; then
-    echo "[INFO] Disabling legacy powerblock.service..."
-    sudo systemctl disable --now powerblock.service || true
-    sudo systemctl mask powerblock.service || true
-fi
+  echo
+  echo "Preserved user files:"
+  echo "  /etc/powerblockconfig.cfg"
+  echo "  /etc/powerblockswitchoff.sh"
 
-# Reload systemd
-sudo systemctl daemon-reload
+  echo
+  echo "Uninstall complete."
+}
 
-# Enable and start new service
-sudo systemctl enable --now powerblockenhanced.service
-
-echo "[SUCCESS] PowerBlockEnhanced installed and running."
+main "$@"
