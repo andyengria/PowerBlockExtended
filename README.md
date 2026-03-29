@@ -195,9 +195,21 @@ See `firmware/flashing.md` for your board-specific wiring and flashing notes.
 
 ### 2. Install the Raspberry Pi service
 
+Either install directly from the repository:
+
+```bash
+wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
+```
+
+Or clone the repository:  
+```bash
+git clone https://github.com/andyengria/PowerBlockExtended.git
+```
+
 From the project root:
 
 ```bash
+cd PowerBlockExtended
 sudo ./install.sh
 ```
 

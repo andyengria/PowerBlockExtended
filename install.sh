@@ -1,75 +1,49 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-RPI_DIR="$SCRIPT_DIR/rpi"
+REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
 
-SERVICE_NAME="powerblockenhanced.service"
-PULSE_SERVICE_NAME="powerblockenhanced-pulse.service"
-LEGACY_SERVICE_NAME="powerblock.service"
+# Detect if we are running from repo root
+if [ ! -d "rpi" ]; then
+    echo "[INFO] Not running from repo — bootstrapping install..."
 
-BIN_MAIN_SRC="$RPI_DIR/powerblockenhanced"
-BIN_HOLD_SRC="$RPI_DIR/powerblockenhanced-hold"
-UNIT_MAIN_SRC="$RPI_DIR/powerblockenhanced.service"
-UNIT_PULSE_SRC="$RPI_DIR/powerblockenhanced-pulse.service"
+    TMP_DIR=$(mktemp -d /tmp/powerblockextended.XXXXXX)
 
-BIN_MAIN_DST="/usr/local/sbin/powerblockenhanced"
-BIN_HOLD_DST="/usr/local/sbin/powerblockenhanced-hold"
-UNIT_MAIN_DST="/etc/systemd/system/powerblockenhanced.service"
-UNIT_PULSE_DST="/etc/systemd/system/powerblockenhanced-pulse.service"
+    echo "[INFO] Cloning repository into $TMP_DIR..."
+    git clone "$REPO_URL" "$TMP_DIR"
 
-require_root() {
-  if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-    echo "Please run as root: sudo ./install.sh" >&2
-    exit 1
-  fi
-}
+    cd "$TMP_DIR"
 
-require_file() {
-  local path="$1"
-  if [ ! -f "$path" ]; then
-    echo "Missing required file: $path" >&2
-    exit 1
-  fi
-}
+    echo "[INFO] Re-running install from repo..."
+    sudo bash ./install.sh
 
-main() {
-  require_root
+    echo "[INFO] Cleaning up..."
+    rm -rf "$TMP_DIR"
 
-  require_file "$BIN_MAIN_SRC"
-  require_file "$BIN_HOLD_SRC"
-  require_file "$UNIT_MAIN_SRC"
-  require_file "$UNIT_PULSE_SRC"
+    exit 0
+fi
 
-  echo "Installing PowerBlockEnhanced files..."
-  install -m 0755 "$BIN_MAIN_SRC" "$BIN_MAIN_DST"
-  install -m 0755 "$BIN_HOLD_SRC" "$BIN_HOLD_DST"
-  install -m 0644 "$UNIT_MAIN_SRC" "$UNIT_MAIN_DST"
-  install -m 0644 "$UNIT_PULSE_SRC" "$UNIT_PULSE_DST"
+echo "[INFO] Installing PowerBlockEnhanced..."
 
-  if systemctl list-unit-files | grep -q "^${LEGACY_SERVICE_NAME}"; then
-    echo "Disabling legacy ${LEGACY_SERVICE_NAME}..."
-    systemctl disable --now "$LEGACY_SERVICE_NAME" || true
-    systemctl mask "$LEGACY_SERVICE_NAME" || true
-  fi
+# Install binaries
+sudo install -m 0755 rpi/powerblockenhanced /usr/local/sbin/powerblockenhanced
+sudo install -m 0755 rpi/powerblockenhanced-hold /usr/local/sbin/powerblockenhanced-hold
 
-  if command -v update-rc.d >/dev/null 2>&1; then
-    update-rc.d powerblock remove || true
-  fi
+# Install services
+sudo install -m 0644 rpi/powerblockenhanced.service /etc/systemd/system/powerblockenhanced.service
+sudo install -m 0644 rpi/powerblockenhanced-pulse.service /etc/systemd/system/powerblockenhanced-pulse.service
 
-  echo "Reloading systemd..."
-  systemctl daemon-reload
+# Disable legacy service if present
+if systemctl list-unit-files | grep -q powerblock.service; then
+    echo "[INFO] Disabling legacy powerblock.service..."
+    sudo systemctl disable --now powerblock.service || true
+    sudo systemctl mask powerblock.service || true
+fi
 
-  echo "Enabling and starting ${SERVICE_NAME}..."
-  systemctl enable --now "$SERVICE_NAME"
+# Reload systemd
+sudo systemctl daemon-reload
 
-  echo
-  echo "Install complete."
-  echo
-  echo "Useful checks:"
-  echo "  systemctl status ${SERVICE_NAME}"
-  echo "  journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
-  echo "  systemctl start ${PULSE_SERVICE_NAME}"
-}
+# Enable and start new service
+sudo systemctl enable --now powerblockenhanced.service
 
-main "$@"
+echo "[SUCCESS] PowerBlockEnhanced installed and running."
