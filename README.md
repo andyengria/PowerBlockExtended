@@ -261,6 +261,7 @@ shutdownscript=/etc/powerblockswitchoff.sh
 ```
 
 Notes
+
 You can override only the options you need — partial configs are supported
 Reboot pulse timing is not configurable and is intentionally fixed to match the ATtiny firmware
 Invalid or missing values fall back to defaults
@@ -284,10 +285,10 @@ Customisation
 
 You can replace this script to perform custom actions before shutdown, for example:
 
-stopping services
-syncing data
-logging events
-triggering external hardware
+- stopping services
+- syncing data
+- logging events
+- triggering external hardware
 
 Just ensure the script eventually powers down the system, e.g.:
 ```bash
