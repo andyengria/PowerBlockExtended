@@ -76,16 +76,10 @@
 #define AFTER_RPI_SHUTDOWN_POWEROFF_MS  8000
 #define FORCE_OFF_HOLD_MS               5000UL
 
-#define FIRST_LONG_MIN_MS               180
-#define FIRST_LONG_MAX_MS               320
+// Reboot intent = one deliberate LOW pulse on PB3 while line normally idles HIGH
+#define REBOOT_LOW_PULSE_MIN_MS         180
+#define REBOOT_LOW_PULSE_MAX_MS         600
 
-#define NORMAL_EDGE_MIN_MS               50
-#define NORMAL_EDGE_MAX_MS              140
-
-#define MIN_SHORT_INTERVALS_FOR_REBOOT   2
-#define MAX_INVALID_INTERVALS            0
-
-#define PULSE_SEQUENCE_TIMEOUT_MS       250
 #define REBOOT_PENDING_TIMEOUT_MS     60000UL
 
 Powerled pl;
@@ -103,14 +97,9 @@ bool bootTimeoutPending = false;
 bool rebootPending = false;
 bool rebootFlashActive = false;
 
-// pulse decoder state
-bool pulseSeqActive = false;
-bool pulseSawLongFirst = false;
-uint8_t pulseShortIntervalCount = 0;
-uint8_t pulseInvalidIntervalCount = 0;
-unsigned long pulseFirstEdgeMs = 0;
-unsigned long pulseLastEdgeMs = 0;
-unsigned long pulseFirstIntervalMs = 0;
+// single-low-pulse decoder state
+bool lowPulseActive = false;
+unsigned long lowPulseStartedMs = 0;
 unsigned long rebootPendingArmedMs = 0;
 
 // long-press state
@@ -131,28 +120,31 @@ void markStateOff() {
 }
 
 void resetPulseSequence() {
-  pulseSeqActive = false;
-  pulseSawLongFirst = false;
-  pulseShortIntervalCount = 0;
-  pulseInvalidIntervalCount = 0;
-  pulseFirstEdgeMs = 0;
-  pulseLastEdgeMs = 0;
-  pulseFirstIntervalMs = 0;
+  lowPulseActive = false;
+  lowPulseStartedMs = 0;
+}
+
+void restoreNormalLedState() {
+  if (systemTurnedOn) {
+    pl.setFrequency(LED_CYCLE_1S);
+    pl.setState(LED_ON);
+  } else {
+    pl.setState(LED_OFF);
+  }
 }
 
 void finishRebootIntentFlash() {
   rebootFlashActive = false;
-  pl.setFrequency(LED_CYCLE_1S);
-  pl.setState(LED_ON);
+  restoreNormalLedState();
 }
 
 void indicateRebootIntentArmed() {
   rebootFlashActive = true;
 
-  // Visible confirmation, then restore solid-on LED
+  // Very obvious debug confirmation
   pl.setFrequency(LED_CYCLE_256MS);
-  pl.setState(LED_OFF);
-  st.setTimeout(400, &finishRebootIntentFlash);
+  pl.setState(LED_BLINKING);
+  st.setTimeout(4000, &finishRebootIntentFlash);
 }
 
 void clearRebootPending() {
@@ -321,83 +313,54 @@ void rpiDown() {
 }
 
 // -----------------------------------------------------------------------------
-// Pulse decoder for one-shot reboot intent on IN_RPI
+// Single long-low reboot intent detector on IN_RPI / PB3
 // -----------------------------------------------------------------------------
+//
+// PB3 normally idles HIGH while Pi is running.
+// Reboot intent is a deliberate LOW pulse of valid length, then HIGH again.
+//
+// Falling edge: start timing low pulse
+// Rising edge: measure low duration and arm reboot if in range
+//
 
 void rpiEdge(bool rpiIsUpNow) {
-  // Production guard: only care once the ATtiny believes the system is on.
-  if (!systemTurnedOn) return;
+  // For diagnosis / simpler behavior, do not gate on systemTurnedOn here.
+  // If you later want the old production restriction back, reintroduce it
+  // after this simpler protocol is proven reliable.
+  // if (!systemTurnedOn) return;
 
   unsigned long now = millis();
 
-  if (!pulseSeqActive) {
-    pulseSeqActive = true;
-    pulseSawLongFirst = false;
-    pulseShortIntervalCount = 0;
-    pulseInvalidIntervalCount = 0;
-    pulseFirstEdgeMs = now;
-    pulseLastEdgeMs = now;
-    pulseFirstIntervalMs = 0;
+  if (!rpiIsUpNow) {
+    // Line went LOW: begin measuring low pulse.
+    lowPulseActive = true;
+    lowPulseStartedMs = now;
     return;
   }
 
-  unsigned long dt = now - pulseLastEdgeMs;
-  pulseLastEdgeMs = now;
+  // Line returned HIGH: if a low pulse was in progress, measure it.
+  if (lowPulseActive) {
+    unsigned long lowDt = now - lowPulseStartedMs;
+    lowPulseActive = false;
+    lowPulseStartedMs = 0;
 
-  // First measured interval must be the special long interval.
-  if (!pulseSawLongFirst) {
-    if (dt >= FIRST_LONG_MIN_MS && dt <= FIRST_LONG_MAX_MS) {
-      pulseSawLongFirst = true;
-      pulseFirstIntervalMs = dt;
-      return;
-    }
-
-    // Restart sequence from this edge.
-    pulseSeqActive = true;
-    pulseSawLongFirst = false;
-    pulseShortIntervalCount = 0;
-    pulseInvalidIntervalCount = 0;
-    pulseFirstEdgeMs = now;
-    pulseLastEdgeMs = now;
-    pulseFirstIntervalMs = 0;
-    return;
-  }
-
-  // After the long-first interval, count good short intervals.
-  if (dt >= NORMAL_EDGE_MIN_MS && dt <= NORMAL_EDGE_MAX_MS) {
-    pulseShortIntervalCount++;
-
-    // Greedy detection: arm immediately once enough short intervals are seen.
-    if (pulseShortIntervalCount >= MIN_SHORT_INTERVALS_FOR_REBOOT) {
+    if (lowDt >= REBOOT_LOW_PULSE_MIN_MS &&
+        lowDt <= REBOOT_LOW_PULSE_MAX_MS) {
       armRebootPending();
-      resetPulseSequence();
     }
-    return;
-  }
-
-  // Invalid interval
-  pulseInvalidIntervalCount++;
-
-  // Too much garbage => abandon and restart from this edge.
-  if (pulseInvalidIntervalCount > MAX_INVALID_INTERVALS) {
-    pulseSeqActive = true;
-    pulseSawLongFirst = false;
-    pulseShortIntervalCount = 0;
-    pulseInvalidIntervalCount = 0;
-    pulseFirstEdgeMs = now;
-    pulseLastEdgeMs = now;
-    pulseFirstIntervalMs = 0;
   }
 }
 
 void pollPulseDecoder() {
-  if (!pulseSeqActive) return;
+  if (!lowPulseActive) return;
 
   unsigned long now = millis();
-  if ((now - pulseLastEdgeMs) < PULSE_SEQUENCE_TIMEOUT_MS) return;
 
-  // Partial / abandoned sequence: discard it.
-  resetPulseSequence();
+  // If the low pulse never returned HIGH in time, abandon it.
+  if ((now - lowPulseStartedMs) > REBOOT_LOW_PULSE_MAX_MS) {
+    lowPulseActive = false;
+    lowPulseStartedMs = 0;
+  }
 }
 
 // -----------------------------------------------------------------------------

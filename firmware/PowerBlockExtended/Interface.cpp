@@ -25,7 +25,6 @@
  * 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  *
  */
-
 #include "Interface.h"
 
 Interface *Interface::thisInstance = 0;
@@ -93,10 +92,12 @@ void Interface::setRpiEdge(void (*funcPointer)(bool)) {
 void Interface::pinChanceIntHandler() {
   unsigned long now = millis();
 
-  // Handle PB3 / IN_RPI immediately.
-  // This preserves all reboot-intent pulse edges instead of passing them
-  // through the generic debounce callback path.
+  // Sample both inputs immediately.
   bool rpiIsUp = IS_RPI_SYSTEM_UP;
+  bool switchPressed = IS_MAIN_SWITCH_ON;
+
+  // PB3 / IN_RPI raw edge handling:
+  // call the edge callback immediately so no edges are lost.
   if (rpiIsUp != this->rpiRawState) {
     this->rpiRawState = rpiIsUp;
     this->rpiLastRawChangeMs = now;
@@ -105,9 +106,12 @@ void Interface::pinChanceIntHandler() {
     if (rpiEdge) rpiEdge(rpiIsUp);
   }
 
-  // Handle the physical pushbutton separately with debounce.
-  this->switchDebouncePending = true;
-  this->switchDebounceDeadlineMs = now + DEBOUNCING_TIMEOUT_MS;
+  // PB0 / IN_SWITCH debounce handling:
+  // only schedule debounce if the button state actually changed.
+  if (switchPressed != this->lastStateSwitch) {
+    this->switchDebouncePending = true;
+    this->switchDebounceDeadlineMs = now + DEBOUNCING_TIMEOUT_MS;
+  }
 }
 
 void Interface::thread() {
