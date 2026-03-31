@@ -1,5 +1,5 @@
 /*  PowerBlockExtended.ino
- *   
+ *
  *  Raspberry PI PetRockBlock PowerBlockExtended (Arduino ATtiny85)
  *
  *  Created on: 26/03/2026
@@ -7,80 +7,87 @@
  *
  *  Based on Vagner Panarello PI PowerController code.
  *
- *  PowerBlockExtended adds:
+ *  Features:
  *    - EEPROM-based restore-after-power-loss
+ *    - EEPROM-persisted switch type (momentary / latched)
  *    - reboot-without-power-cut using a one-shot reboot-intent pulse
  *    - clean integration with the standard PetRockBlock Raspberry Pi service
+ *    - automatic momentary vs latched slide-switch detection
+ *    - emergency hard power-off by 3 quick user actions
+ *    - slide-switch OFF cancels reboot intent
+ *    - slide-switch ON before cut cancels pending power-off
  *
- *  Reboot-intent pulse protocol on IN_RPI (PB3)
+ *  Notes on switch handling
  *  ------------------------------------------------
- *  One-shot reboot intent:
- *    - quick 4-pulse pattern on PB3
- *    - first interval is "long"
- *    - following intervals are "short"
+ *    - EEPROM switch mode is treated as a hint for restore policy
+ *    - live detection still re-validates switch type after power-on
+ *    - while revalidation is active, momentary-only actions are suppressed
+ *      so stale EEPROM state cannot trigger false long-press shutdowns
  *
- *  Example Linux-side timing sequence:
- *    220,70,90,70,90,70,90
+ *  Momentary switch behavior
+ *    - press while OFF          => power on
+ *    - short press while ON     => request clean shutdown
+ *    - long press while ON      => force immediate power off
+ *    - 3 quick presses while ON => force immediate power off
  *
- *  Meaning:
- *    - if this pattern is seen while the system is ON, the NEXT Pi-down is
- *      treated as a reboot and power is kept ON
- *    - no pulse = legacy behavior (Pi-down => power off)
+ *  Latched slide switch behavior
+ *    - switch ON while OFF            => power on
+ *    - switch remains ON              => keep power on
+ *    - switch OFF while ON            => request clean shutdown, then power off
+ *    - switch OFF cancels reboot intent
+ *    - switch ON again before cut     => cancel pending power-off, keep power on
+ *    - 3 quick OFF toggles while ON   => force immediate power off
  *
- *  Decoder behavior:
- *    - runs directly on PB3 edges
- *    - first interval must match the configured long window
- *    - then at least N valid short intervals must be seen
- *    - reboot intent is armed greedily as soon as enough valid intervals
- *      are received
- *    - exact edge count is not required
- *    - partial/invalid sequences time out and are discarded
+ *  Restore-after-power-loss behavior
+ *  ------------------------------------------------
+ *    - if last saved power state was OFF, stay OFF
+ *    - if last saved power state was ON and switch type is MOMENTARY, restore ON
+ *    - if last saved power state was ON and switch type is LATCHED,
+ *      restore ON only if the physical switch is currently ON
  *
- *  Implementation notes:
- *    - requires updated Interface.cpp / Interface.h where:
- *        * PB3 edge handling is immediate
- *        * front-panel button debounce remains delayed
- *    - reboot intent is one-shot and is cleared after use or timeout
- *    - normal PowerBlock shutdown behavior is otherwise preserved
+ *  Reboot intent pulse on IN_RPI (PB3)
+ *  ------------------------------------------------
+ *    - one deliberate LOW pulse on PB3 while line normally idles HIGH
+ *    - LOW pulse width must be within configured min/max window
  *
- *  This library is free software; you can redistribute it
- *  and/or modify it under the terms of the GNU Lesser
- *  General Public License as published by the Free Software
- *  Foundation; either version 2.1 of the License, or (at
- *  your option) any later version.
- *
- *  This library is distributed in the hope that it will
- *  be useful, but WITHOUT ANY WARRANTY; without even the
- *  implied warranty of MERCHANTABILITY or FITNESS FOR A
- *  PARTICULAR PURPOSE.  See the GNU Lesser General Public
- *  License for more details.
- *
- *  You should have received a copy of the GNU Lesser
- *  General Public License along with this library; if not,
- *  write to the Free Software Foundation, Inc.,
- *  51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
- *
+ *  LED behavior for reboot intent
+ *  ------------------------------------------------
+ *    - when reboot intent is armed, LED pulses continuously like boot-up
+ *    - this continues through the reboot cycle
+ *    - when the Pi fully comes back up, LED returns solid ON
+ *    - if reboot intent is cancelled, times out, or power is removed,
+ *      LED returns to the normal state immediately
  */
+
 #include <EEPROM.h>
 #include "Powerled.h"
 #include "Interface.h"
 #include "SimpleTimer.h"
 
-#define EEPROM_STATE_ADDR 0
-#define STATE_OFF 0x00
-#define STATE_ON  0xA5
+#define EEPROM_STATE_ADDR               0
+#define EEPROM_SWITCH_MODE_ADDR         1
 
-#define OUT_LED 1
+#define STATE_OFF                       0x00
+#define STATE_ON                        0xA5
+
+#define SWITCH_EEPROM_UNKNOWN           0x00
+#define SWITCH_EEPROM_MOMENTARY         0xA1
+#define SWITCH_EEPROM_LATCHED           0xB2
+
+#define OUT_LED                         1
 
 #define RPI_FAILURE_TIMEOUT_MS          180000L
 #define AFTER_RPI_SHUTDOWN_POWEROFF_MS  8000
 #define FORCE_OFF_HOLD_MS               5000UL
 
-// Reboot intent = one deliberate LOW pulse on PB3 while line normally idles HIGH
 #define REBOOT_LOW_PULSE_MIN_MS         180
 #define REBOOT_LOW_PULSE_MAX_MS         600
+#define REBOOT_PENDING_TIMEOUT_MS       180000UL
 
-#define REBOOT_PENDING_TIMEOUT_MS     180000UL
+#define SWITCH_TYPE_DETECT_MS           10000UL
+
+#define HARD_OFF_MULTI_WINDOW_MS        4000UL
+#define HARD_OFF_MULTI_COUNT            3
 
 Powerled pl;
 Interface hw;
@@ -93,11 +100,11 @@ bool rpiBootUpDetectionFailure = false;
 bool powerOffPending = false;
 bool bootTimeoutPending = false;
 
-// one-shot reboot intent
+// reboot intent
 bool rebootPending = false;
 bool rebootFlashActive = false;
 
-// single-low-pulse decoder state
+// reboot pulse measurement
 bool lowPulseActive = false;
 unsigned long lowPulseStartedMs = 0;
 unsigned long rebootPendingArmedMs = 0;
@@ -107,6 +114,32 @@ bool switchPressActive = false;
 bool longPressTriggered = false;
 unsigned long switchPressStartMs = 0;
 
+// switch mode
+enum SwitchMode {
+  SWITCH_MODE_UNKNOWN = 0,
+  SWITCH_MODE_MOMENTARY,
+  SWITCH_MODE_LATCHED
+};
+
+SwitchMode switchMode = SWITCH_MODE_UNKNOWN;
+
+// live switch-type detection
+bool switchDetectActive = false;
+bool switchDetectStartedFromUserPress = false;
+unsigned long switchDetectStartMs = 0;
+
+// shared multi-action hard-off state
+uint8_t hardOffActionCount = 0;
+unsigned long hardOffWindowStartMs = 0;
+
+// -----------------------------------------------------------------------------
+
+void turnPowerSupplyOff();
+void delayedPowerOffCheck();
+void rpiBootTimeOut();
+
+// -----------------------------------------------------------------------------
+// EEPROM helpers
 // -----------------------------------------------------------------------------
 
 void markStateOn() {
@@ -118,6 +151,88 @@ void markStateOff() {
   EEPROM.update(EEPROM_STATE_ADDR, STATE_OFF);
   delay(5);
 }
+
+void saveSwitchModeToEeprom(SwitchMode mode) {
+  uint8_t v = SWITCH_EEPROM_UNKNOWN;
+
+  if (mode == SWITCH_MODE_MOMENTARY) {
+    v = SWITCH_EEPROM_MOMENTARY;
+  } else if (mode == SWITCH_MODE_LATCHED) {
+    v = SWITCH_EEPROM_LATCHED;
+  }
+
+  EEPROM.update(EEPROM_SWITCH_MODE_ADDR, v);
+  delay(5);
+}
+
+SwitchMode loadSwitchModeFromEeprom() {
+  uint8_t v = EEPROM.read(EEPROM_SWITCH_MODE_ADDR);
+
+  if (v == SWITCH_EEPROM_MOMENTARY) return SWITCH_MODE_MOMENTARY;
+  if (v == SWITCH_EEPROM_LATCHED)   return SWITCH_MODE_LATCHED;
+  return SWITCH_MODE_UNKNOWN;
+}
+
+// -----------------------------------------------------------------------------
+// Switch detection helpers
+// -----------------------------------------------------------------------------
+
+void resetSwitchModeDetection() {
+  switchDetectActive = false;
+  switchDetectStartedFromUserPress = false;
+  switchDetectStartMs = 0;
+}
+
+void startSwitchModeDetection(bool startedFromUserPress) {
+  switchDetectActive = true;
+  switchDetectStartedFromUserPress = startedFromUserPress;
+  switchDetectStartMs = millis();
+}
+
+void classifyAsLatchedIfHeld() {
+  if (!switchDetectActive) return;
+  if (!IS_MAIN_SWITCH_ON) return;
+
+  unsigned long now = millis();
+  if ((now - switchDetectStartMs) >= SWITCH_TYPE_DETECT_MS) {
+    switchMode = SWITCH_MODE_LATCHED;
+    saveSwitchModeToEeprom(switchMode);
+    resetSwitchModeDetection();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Shared multi-action hard-off helpers
+// -----------------------------------------------------------------------------
+
+void resetHardOffSequence() {
+  hardOffActionCount = 0;
+  hardOffWindowStartMs = 0;
+}
+
+bool recordHardOffActionAndCheckTrigger() {
+  unsigned long now = millis();
+
+  if (hardOffActionCount == 0 ||
+      (now - hardOffWindowStartMs) > HARD_OFF_MULTI_WINDOW_MS) {
+    hardOffActionCount = 1;
+    hardOffWindowStartMs = now;
+    return false;
+  }
+
+  hardOffActionCount++;
+
+  if (hardOffActionCount >= HARD_OFF_MULTI_COUNT) {
+    resetHardOffSequence();
+    return true;
+  }
+
+  return false;
+}
+
+// -----------------------------------------------------------------------------
+// LED / reboot helpers
+// -----------------------------------------------------------------------------
 
 void resetPulseSequence() {
   lowPulseActive = false;
@@ -133,23 +248,26 @@ void restoreNormalLedState() {
   }
 }
 
-void finishRebootIntentFlash() {
-  rebootFlashActive = false;
-  restoreNormalLedState();
-}
-
 void indicateRebootIntentArmed() {
   rebootFlashActive = true;
-
-  // Very obvious debug confirmation
-  pl.setFrequency(LED_CYCLE_256MS);
+  pl.setFrequency(LED_CYCLE_1S);
   pl.setState(LED_BLINKING);
-  st.setTimeout(4000, &finishRebootIntentFlash);
 }
 
 void clearRebootPending() {
   rebootPending = false;
   rebootPendingArmedMs = 0;
+
+  if (rebootFlashActive) {
+    rebootFlashActive = false;
+    restoreNormalLedState();
+  }
+}
+
+void consumeRebootPendingForReboot() {
+  rebootPending = false;
+  rebootPendingArmedMs = 0;
+  // Keep rebootFlashActive and LED blinking until rpiUp()
 }
 
 void armRebootPending() {
@@ -169,7 +287,74 @@ void pollRebootPendingTimeout() {
   }
 }
 
-void turnPowerSupplyOff();
+// -----------------------------------------------------------------------------
+// Core power control
+// -----------------------------------------------------------------------------
+
+void beginPowerOnSequence(bool startedFromUserPress) {
+  systemTurnedOn = true;
+  systemIsUp = false;
+  rpiBootUpDetectionFailure = false;
+  powerOffPending = false;
+
+  clearRebootPending();
+  resetPulseSequence();
+  resetHardOffSequence();
+
+  switchPressActive = false;
+  longPressTriggered = false;
+
+  if (IS_MAIN_SWITCH_ON) {
+    startSwitchModeDetection(startedFromUserPress);
+  } else {
+    resetSwitchModeDetection();
+  }
+
+  pl.setFrequency(LED_CYCLE_1S);
+  pl.setState(LED_BLINKING);
+
+  RPI_SHUTDOWN_REQUEST_CLEAR;
+  delay(20);
+  POWER_SUPPLY_ON;
+
+  if (!bootTimeoutPending) {
+    bootTimeoutPending = true;
+    st.setTimeout(RPI_FAILURE_TIMEOUT_MS, &rpiBootTimeOut);
+  }
+}
+
+void cancelLatchedShutdownRequest() {
+  powerOffPending = false;
+  RPI_SHUTDOWN_REQUEST_CLEAR;
+
+  if (systemIsUp) {
+    pl.setFrequency(LED_CYCLE_1S);
+    pl.setState(LED_ON);
+  } else {
+    pl.setFrequency(LED_CYCLE_1S);
+    pl.setState(LED_BLINKING);
+  }
+}
+
+void requestShutdownFromUserAction() {
+  clearRebootPending();
+  markStateOff();
+
+  pl.setFrequency(LED_CYCLE_256MS);
+  pl.setState(LED_BLINKING);
+
+  RPI_SHUTDOWN_REQUEST;
+
+  if (rpiBootUpDetectionFailure) {
+    turnPowerSupplyOff();
+    return;
+  }
+
+  if (!systemIsUp && !powerOffPending) {
+    powerOffPending = true;
+    st.setTimeout(AFTER_RPI_SHUTDOWN_POWEROFF_MS, &delayedPowerOffCheck);
+  }
+}
 
 void forceImmediatePowerOff() {
   markStateOff();
@@ -188,6 +373,8 @@ void forceImmediatePowerOff() {
   longPressTriggered = false;
 
   resetPulseSequence();
+  resetHardOffSequence();
+  resetSwitchModeDetection();
 }
 
 void rpiBootTimeOut() {
@@ -206,84 +393,25 @@ void delayedPowerOffCheck() {
 
   if (!systemTurnedOn || systemIsUp) return;
 
-  // One-shot reboot intent wins only for the next Pi-down.
+  if (switchMode == SWITCH_MODE_LATCHED) {
+    if (IS_MAIN_SWITCH_ON) {
+      return;
+    }
+    turnPowerSupplyOff();
+    return;
+  }
+
   if (rebootPending) {
-    clearRebootPending();
-    return; // keep power on, assume reboot
+    consumeRebootPendingForReboot();
+    return;
   }
 
-  // Default behavior is legacy: Pi-down => power off
   turnPowerSupplyOff();
-}
-
-void handleButtonPress() {
-  if (!systemTurnedOn) {
-    // power on
-    systemTurnedOn = true;
-    systemIsUp = false;
-    rpiBootUpDetectionFailure = false;
-    powerOffPending = false;
-    rebootFlashActive = false;
-
-    clearRebootPending();
-    resetPulseSequence();
-
-    pl.setFrequency(LED_CYCLE_1S);
-    pl.setState(LED_BLINKING);
-
-    RPI_SHUTDOWN_REQUEST_CLEAR;
-    delay(20);
-    POWER_SUPPLY_ON;
-
-    if (!bootTimeoutPending) {
-      bootTimeoutPending = true;
-      st.setTimeout(RPI_FAILURE_TIMEOUT_MS, &rpiBootTimeOut);
-    }
-  } else {
-    // short press while already on = normal shutdown request
-    clearRebootPending();
-    markStateOff();
-
-    pl.setFrequency(LED_CYCLE_256MS);
-    pl.setState(LED_BLINKING);
-
-    RPI_SHUTDOWN_REQUEST;
-
-    if (rpiBootUpDetectionFailure) {
-      turnPowerSupplyOff();
-    }
-  }
-}
-
-void turnedOn() {
-  handleButtonPress();
-}
-
-void turnedOff() {
-  // release ignored for momentary pushbutton
-}
-
-void rpiUp() {
-  if (systemTurnedOn && !systemIsUp) {
-    systemIsUp = true;
-    rpiBootUpDetectionFailure = false;
-    powerOffPending = false;
-
-    clearRebootPending();
-    markStateOn();
-
-    if (!rebootFlashActive) {
-      pl.setFrequency(LED_CYCLE_1S);
-      pl.setState(LED_ON);
-    }
-
-    resetPulseSequence();
-  }
 }
 
 void turnPowerSupplyOff() {
   markStateOff();
-  
+
   pl.setState(LED_OFF);
   RPI_SHUTDOWN_REQUEST_CLEAR;
   POWER_SUPPLY_OFF;
@@ -297,9 +425,93 @@ void turnPowerSupplyOff() {
 
   clearRebootPending();
   resetPulseSequence();
+  resetHardOffSequence();
+  resetSwitchModeDetection();
 
-  if (systemTurnedOn) {
-    systemTurnedOn = false;
+  systemTurnedOn = false;
+}
+
+// -----------------------------------------------------------------------------
+// External event handlers
+// -----------------------------------------------------------------------------
+
+void turnedOn() {
+  if (!systemTurnedOn) {
+    beginPowerOnSequence(true);
+    return;
+  }
+
+  // While revalidating switch type, do not trust stale EEPROM mode yet.
+  if (switchDetectActive) {
+    return;
+  }
+
+  if (switchMode == SWITCH_MODE_MOMENTARY) {
+    if (recordHardOffActionAndCheckTrigger()) {
+      forceImmediatePowerOff();
+      return;
+    }
+
+    requestShutdownFromUserAction();
+    return;
+  }
+
+  if (switchMode == SWITCH_MODE_LATCHED) {
+    cancelLatchedShutdownRequest();
+    return;
+  }
+
+  // UNKNOWN: do nothing on asserted state while already on
+}
+
+void turnedOff() {
+  if (!systemTurnedOn) return;
+
+  if (switchDetectActive) {
+    if (switchDetectStartedFromUserPress) {
+      switchMode = SWITCH_MODE_MOMENTARY;
+      saveSwitchModeToEeprom(switchMode);
+      resetSwitchModeDetection();
+      return;
+    } else {
+      if (switchMode != SWITCH_MODE_LATCHED) {
+        switchMode = SWITCH_MODE_LATCHED;
+        saveSwitchModeToEeprom(switchMode);
+      }
+      resetSwitchModeDetection();
+      // continue into latched OFF handling
+    }
+  }
+
+  if (switchMode == SWITCH_MODE_LATCHED) {
+    clearRebootPending();
+
+    if (recordHardOffActionAndCheckTrigger()) {
+      forceImmediatePowerOff();
+      return;
+    }
+
+    requestShutdownFromUserAction();
+  }
+}
+
+void rpiUp() {
+  if (systemTurnedOn && !systemIsUp) {
+    systemIsUp = true;
+    rpiBootUpDetectionFailure = false;
+    powerOffPending = false;
+
+    rebootPending = false;
+    rebootPendingArmedMs = 0;
+    rebootFlashActive = false;
+
+    markStateOn();
+
+    pl.setFrequency(LED_CYCLE_1S);
+    pl.setState(LED_ON);
+
+    resetPulseSequence();
+    resetHardOffSequence();
   }
 }
 
@@ -313,32 +525,18 @@ void rpiDown() {
 }
 
 // -----------------------------------------------------------------------------
-// Single long-low reboot intent detector on IN_RPI / PB3
+// Reboot pulse detector on PB3
 // -----------------------------------------------------------------------------
-//
-// PB3 normally idles HIGH while Pi is running.
-// Reboot intent is a deliberate LOW pulse of valid length, then HIGH again.
-//
-// Falling edge: start timing low pulse
-// Rising edge: measure low duration and arm reboot if in range
-//
 
 void rpiEdge(bool rpiIsUpNow) {
-  // For diagnosis / simpler behavior, do not gate on systemTurnedOn here.
-  // If you later want the old production restriction back, reintroduce it
-  // after this simpler protocol is proven reliable.
-  // if (!systemTurnedOn) return;
-
   unsigned long now = millis();
 
   if (!rpiIsUpNow) {
-    // Line went LOW: begin measuring low pulse.
     lowPulseActive = true;
     lowPulseStartedMs = now;
     return;
   }
 
-  // Line returned HIGH: if a low pulse was in progress, measure it.
   if (lowPulseActive) {
     unsigned long lowDt = now - lowPulseStartedMs;
     lowPulseActive = false;
@@ -355,8 +553,6 @@ void pollPulseDecoder() {
   if (!lowPulseActive) return;
 
   unsigned long now = millis();
-
-  // If the low pulse never returned HIGH in time, abandon it.
   if ((now - lowPulseStartedMs) > REBOOT_LOW_PULSE_MAX_MS) {
     lowPulseActive = false;
     lowPulseStartedMs = 0;
@@ -385,12 +581,26 @@ void pollLongPressForceOff() {
     return;
   }
 
+  // Do not allow momentary-style long-press while switch type is being revalidated.
+  if (switchDetectActive) {
+    switchPressActive = false;
+    longPressTriggered = false;
+    return;
+  }
+
+  if (switchMode != SWITCH_MODE_MOMENTARY) {
+    switchPressActive = false;
+    longPressTriggered = false;
+    return;
+  }
+
   if (pressed) {
     if (!switchPressActive) {
       switchPressActive = true;
       switchPressStartMs = now;
       longPressTriggered = false;
-    } else if (!longPressTriggered && (now - switchPressStartMs >= FORCE_OFF_HOLD_MS)) {
+    } else if (!longPressTriggered &&
+               (now - switchPressStartMs >= FORCE_OFF_HOLD_MS)) {
       longPressTriggered = true;
       forceImmediatePowerOff();
     }
@@ -411,17 +621,45 @@ void setup() {
   hw.setRpiGoUp(&rpiUp);
   hw.setRpiEdge(&rpiEdge);
 
-  if (EEPROM.read(EEPROM_STATE_ADDR) == STATE_ON) {
-    handleButtonPress();
-  } else {
-    pl.setState(LED_OFF);
+  uint8_t savedState = EEPROM.read(EEPROM_STATE_ADDR);
+  bool switchCurrentlyOn = IS_MAIN_SWITCH_ON;
+
+  switchMode = loadSwitchModeFromEeprom();
+
+  // Restore-after-power-loss policy
+  if (savedState == STATE_ON) {
+    if (switchMode == SWITCH_MODE_LATCHED) {
+      if (switchCurrentlyOn) {
+        beginPowerOnSequence(false);
+        return;
+      } else {
+        pl.setState(LED_OFF);
+        return;
+      }
+    }
+
+    // Momentary or unknown: preserve restore-on-power-return behavior
+    beginPowerOnSequence(false);
+    return;
   }
+
+  // Important:
+  // even if EEPROM currently says MOMENTARY, a physically asserted switch
+  // at boot should still be allowed to power on so the firmware can relearn
+  // that the hardware is actually a latched slide switch.
+  if (switchCurrentlyOn) {
+    beginPowerOnSequence(false);
+    return;
+  }
+
+  pl.setState(LED_OFF);
 }
 
 void loop() {
   pollRunningStatePersistence();
   pollLongPressForceOff();
   pollRebootPendingTimeout();
+  classifyAsLatchedIfHeld();
   pl.thread();
   hw.thread();
   st.thread();

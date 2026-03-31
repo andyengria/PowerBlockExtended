@@ -15,6 +15,11 @@ Before flashing:
 
 ## Arduino IDE Setup
 
+Install ATtiny support in the IDE 
+
+- Add the following under Preferences -> Additional Boards Manager URLs: https://raw.githubusercontent.com/damellis/attiny/ide-1.6.x-boards-manager/package_damellis_attiny_index.json
+- Install the support under: Tools -> Board -> Boards Manager -> Search and install attiny by David A. Mellis
+
 Compile the firmware using the Arduino IDE with the following settings:
 
 ```

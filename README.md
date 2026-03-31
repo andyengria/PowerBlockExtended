@@ -4,13 +4,13 @@ PowerBlockExtended extends the PetRockBlock PowerBlock with updated ATtiny85 fir
 
 ## Features
 
-- Power on via front button  
-- Graceful shutdown via button  
-- Long-press hard power off  
-- Restore previous power state after power loss (EEPROM)  
-- Reboot without cutting power  
-- systemd-based Raspberry Pi service  
-- Automatic reboot detection across all reboot methods  
+- Power on via slide or momentary switch
+- Graceful shutdown via switch
+- Hard power off feature - use if rpi unresponsive
+- Restore previous power state after unexpected power loss (EEPROM)
+- Reboot without cutting power
+- systemd-based Raspberry Pi service
+- Automatic reboot detection across all reboot methods
 
 ---
 
@@ -31,9 +31,9 @@ PowerBlockExtended extends the PetRockBlock PowerBlock with updated ATtiny85 fir
 
 ### Power behaviour
 
-- Button press while off → power on  
-- Button press while running → graceful shutdown request  
-- Long press (longer than 5 seconds) → hard power off  
+- Button while off → power on  
+- Button while running → graceful shutdown request  
+- Long press (longer than 5 seconds - momentary switch only)) / On-off repeated 3 times in quick succesion (slide and momentary) → hard power off
 
 ---
 
@@ -46,11 +46,13 @@ The last intended power state is stored in EEPROM:
 | `0xA5` | ON |
 | `0x00` | OFF |
 
+Note: with slide switch if you turn the switch off before power is restored the rpi will remain powered off.
+
 ---
 
 ### Reboot detection
 
-Reboot is detected via a low pulse on PB3:
+Reboot intent comes from the OS reboot (i.e. sudo reboot) not switch status and is detected via a low pulse on PB3 to the ATtiny:
 
 - PB3 is normally HIGH  
 - A LOW pulse (180–600 ms) signals reboot intent  
