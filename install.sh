@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/YOURUSER/PowerBlockExtended.git"
+REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 
 SERVICE_NAME="powerblockenhanced.service"
@@ -38,15 +38,28 @@ bootstrap_if_needed() {
   local script_path
   script_path="$(readlink -f "$0" 2>/dev/null || true)"
 
+  # If installer is being piped to bash, $0 will not be a real file path.
   if [ -z "$script_path" ] || [ ! -f "$script_path" ]; then
-    echo "Unable to resolve installer path." >&2
-    exit 1
+    echo "Installer is running from stdin; bootstrapping repository into /tmp..."
+    if ! have_cmd git; then
+      echo "ERROR: git is required for bootstrap install." >&2
+      exit 1
+    fi
+
+    local tmpdir
+    tmpdir="$(mktemp -d /tmp/powerblockenhanced.XXXXXX)"
+    echo "Cloning ${REPO_URL} (branch: ${REPO_BRANCH}) to ${tmpdir}..."
+    git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$tmpdir"
+    echo "Re-running installer from cloned repository..."
+    exec bash "${tmpdir}/install.sh" "$@"
   fi
 
   local script_dir
   script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 
-  if [ -f "${script_dir}/${BIN_MAIN_SRC}" ] && [ -f "${script_dir}/${BIN_HOLD_SRC}" ] && [ -f "${script_dir}/${UNIT_MAIN_SRC}" ]; then
+  if [ -f "${script_dir}/${BIN_MAIN_SRC}" ] &&
+     [ -f "${script_dir}/${BIN_HOLD_SRC}" ] &&
+     [ -f "${script_dir}/${UNIT_MAIN_SRC}" ]; then
     return 0
   fi
 
@@ -60,10 +73,8 @@ bootstrap_if_needed() {
 
   local tmpdir
   tmpdir="$(mktemp -d /tmp/powerblockenhanced.XXXXXX)"
-
   echo "Cloning ${REPO_URL} (branch: ${REPO_BRANCH}) to ${tmpdir}..."
   git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$tmpdir"
-
   echo "Re-running installer from cloned repository..."
   exec bash "${tmpdir}/install.sh" "$@"
 }
