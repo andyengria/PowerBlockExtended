@@ -6,7 +6,7 @@ PowerBlockExtended extends the PetRockBlock PowerBlock with updated ATtiny85 fir
 
 - Power on via slide or momentary switch
 - Graceful shutdown via switch
-- Hard power off feature - use if rpi unresponsive
+- Hard power off feature - use if the Pi is unresponsive
 - Restore previous power state after unexpected power loss (EEPROM)
 - Reboot without cutting power
 - systemd-based Raspberry Pi service
@@ -33,7 +33,7 @@ PowerBlockExtended extends the PetRockBlock PowerBlock with updated ATtiny85 fir
 
 - Button while off → power on  
 - Button while running → graceful shutdown request  
-- Long press (longer than 5 seconds - momentary switch only)) / On-off repeated 3 times in quick succesion (slide and momentary) → hard power off
+- Long press (longer than 5 seconds - momentary switch only) / On-off repeated 3 times in quick succession (slide and momentary) → hard power off
 
 ---
 
