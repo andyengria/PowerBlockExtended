@@ -5,10 +5,7 @@ REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 
 SERVICE_NAME="powerblockextended.service"
-SERVICE_NAME="powerblockextended.service"
 
-
-RUNTIME_DIR="/run/powerblockextended"
 LEGACY_SERVICE_NAME="powerblock.service"
 
 BIN_MAIN_SRC="rpi/powerblockextended"
@@ -236,8 +233,8 @@ case "\$ACTION" in
   *) exit 0 ;;
 esac
 
-/usr/bin/gpioset -c ${gpiochip} -m=time -s 0.25 ${status_pin}=0
-/usr/bin/gpioset -c ${gpiochip} -m=time -s 0.05 ${status_pin}=1
+/usr/bin/gpioset -m time -s 1 ${gpiochip} ${status_pin}=0
+/usr/bin/gpioset -m time -s 1 ${gpiochip} ${status_pin}=1
 
 exit 0
 EOF

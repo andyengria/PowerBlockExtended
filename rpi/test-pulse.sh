@@ -92,8 +92,8 @@ pulse_sysfs() {
 }
 
 pulse_gpiod_v1() {
-    gpioset -c "$GPIOCHIP" -m=time -s "$PULSE_SECONDS" "$STATUSPIN=0"
-    gpioset -c "$GPIOCHIP" -m=time -s 0.05 "$STATUSPIN=1"
+    gpioset -m time -s "$PULSE_SECONDS" "$GPIOCHIP" "$STATUSPIN=0"
+    gpioset -m time -s 1 "$GPIOCHIP" "$STATUSPIN=1"
 }
 
 pulse_gpiod_v2() {
