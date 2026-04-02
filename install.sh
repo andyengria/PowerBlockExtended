@@ -4,24 +4,28 @@ set -euo pipefail
 REPO_URL="https://github.com/andyengria/PowerBlockExtended.git"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 
-SERVICE_NAME="powerblockenhanced.service"
+SERVICE_NAME="powerblockextended.service"
+SERVICE_NAME="powerblockextended.service"
+
+
+RUNTIME_DIR="/run/powerblockextended"
 LEGACY_SERVICE_NAME="powerblock.service"
 
-BIN_MAIN_SRC="rpi/powerblockenhanced"
-BIN_HOLD_SRC="rpi/powerblockenhanced-hold"
-UNIT_MAIN_SRC="rpi/powerblockenhanced.service"
+BIN_MAIN_SRC="rpi/powerblockextended"
+BIN_HOLD_SRC="rpi/powerblockextended-hold"
+UNIT_MAIN_SRC="rpi/powerblockextended.service"
 
-BIN_MAIN_DST="/usr/local/sbin/powerblockenhanced"
-BIN_HOLD_DST="/usr/local/sbin/powerblockenhanced-hold"
-UNIT_MAIN_DST="/etc/systemd/system/powerblockenhanced.service"
+BIN_MAIN_DST="/usr/local/sbin/powerblockextended"
+BIN_HOLD_DST="/usr/local/sbin/powerblockextended-hold"
+UNIT_MAIN_DST="/etc/systemd/system/powerblockextended.service"
 
 HOOK_DIR="/usr/lib/systemd/system-shutdown"
-HOOK_DST="${HOOK_DIR}/powerblockenhanced-reboot-pulse"
+HOOK_DST="${HOOK_DIR}/powerblockextended-reboot-pulse"
 
 CONFIG_DST="/etc/powerblockconfig.cfg"
 SHUTDOWN_SCRIPT_DST="/etc/powerblockswitchoff.sh"
 
-RUNTIME_DIR="/run/powerblockenhanced"
+RUNTIME_DIR="/run/powerblockextended"
 
 require_root() {
   if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -35,29 +39,17 @@ have_cmd() {
 }
 
 bootstrap_if_needed() {
-  local script_path
+  local script_path script_dir
+
   script_path="$(readlink -f "$0" 2>/dev/null || true)"
+  script_dir=""
 
-  # If installer is being piped to bash, $0 will not be a real file path.
-  if [ -z "$script_path" ] || [ ! -f "$script_path" ]; then
-    echo "Installer is running from stdin; bootstrapping repository into /tmp..."
-    if ! have_cmd git; then
-      echo "ERROR: git is required for bootstrap install." >&2
-      exit 1
-    fi
-
-    local tmpdir
-    tmpdir="$(mktemp -d /tmp/powerblockenhanced.XXXXXX)"
-    echo "Cloning ${REPO_URL} (branch: ${REPO_BRANCH}) to ${tmpdir}..."
-    git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$tmpdir"
-    echo "Re-running installer from cloned repository..."
-    exec bash "${tmpdir}/install.sh" "$@"
+  if [ -n "$script_path" ] && [ -f "$script_path" ]; then
+    script_dir="$(cd "$(dirname "$script_path")" && pwd)"
   fi
 
-  local script_dir
-  script_dir="$(cd "$(dirname "$script_path")" && pwd)"
-
-  if [ -f "${script_dir}/${BIN_MAIN_SRC}" ] &&
+  if [ -n "$script_dir" ] &&
+     [ -f "${script_dir}/${BIN_MAIN_SRC}" ] &&
      [ -f "${script_dir}/${BIN_HOLD_SRC}" ] &&
      [ -f "${script_dir}/${UNIT_MAIN_SRC}" ]; then
     return 0
@@ -72,7 +64,7 @@ bootstrap_if_needed() {
   fi
 
   local tmpdir
-  tmpdir="$(mktemp -d /tmp/powerblockenhanced.XXXXXX)"
+  tmpdir="$(mktemp -d /tmp/powerblockextended.XXXXXX)"
   echo "Cloning ${REPO_URL} (branch: ${REPO_BRANCH}) to ${tmpdir}..."
   git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$tmpdir"
   echo "Re-running installer from cloned repository..."
@@ -124,11 +116,38 @@ detect_gpiochip() {
 }
 
 detect_hook_backend() {
-  if have_cmd gpioset; then
-    if gpioset --help 2>&1 | grep -q -- '-m'; then
+  if ! have_cmd gpioset; then
+    echo "sysfs"
+    return
+  fi
+
+  local ver helptext
+  ver="$(gpioset --version 2>/dev/null || true)"
+
+  case "$ver" in
+    *" v2."*|*" 2."*)
       echo "gpiod-v2"
       return
-    fi
+      ;;
+    *" v1."*|*" 1."*)
+      echo "gpiod-v1"
+      return
+      ;;
+  esac
+
+  helptext="$(gpioset --help 2>&1 || true)"
+
+  if printf '%s\n' "$helptext" | grep -q -- '--hold-period'; then
+    echo "gpiod-v2"
+    return
+  fi
+
+  if printf '%s\n' "$helptext" | grep -q -- '--toggle'; then
+    echo "gpiod-v2"
+    return
+  fi
+
+  if printf '%s\n' "$helptext" | grep -q -- '--mode'; then
     echo "gpiod-v1"
     return
   fi
@@ -173,7 +192,7 @@ install_shutdown_helper_if_missing() {
     echo "Installing default shutdown helper at $SHUTDOWN_SCRIPT_DST..."
     cat > "$SHUTDOWN_SCRIPT_DST" <<'EOF'
 #!/bin/bash
-exec /sbin/shutdown -h now "PowerBlockEnhanced requested shutdown"
+exec /sbin/shutdown -h now "PowerBlockExtended requested shutdown"
 EOF
     chmod 0755 "$SHUTDOWN_SCRIPT_DST"
   else
@@ -200,8 +219,7 @@ case "\$ACTION" in
   *) exit 0 ;;
 esac
 
-/usr/bin/gpioset -c ${gpiochip} -m=time -s 250ms ${status_pin}=0
-/usr/bin/gpioset -c ${gpiochip} -m=time -s 50ms ${status_pin}=1
+/usr/bin/gpioset -c ${gpiochip} -t 250ms,50ms,0 ${status_pin}=0
 
 exit 0
 EOF
@@ -216,17 +234,8 @@ case "\$ACTION" in
   *) exit 0 ;;
 esac
 
-/usr/bin/gpioset -c ${gpiochip} ${status_pin}=0 &
-LOWPID=\$!
-/usr/bin/sleep 0.25
-kill "\$LOWPID" 2>/dev/null || true
-wait "\$LOWPID" 2>/dev/null || true
-
-/usr/bin/gpioset -c ${gpiochip} ${status_pin}=1 &
-HIGHPID=\$!
-/usr/bin/sleep 0.05
-kill "\$HIGHPID" 2>/dev/null || true
-wait "\$HIGHPID" 2>/dev/null || true
+/usr/bin/gpioset -c ${gpiochip} -m=time -s 0.25 ${status_pin}=0
+/usr/bin/gpioset -c ${gpiochip} -m=time -s 0.05 ${status_pin}=1
 
 exit 0
 EOF
@@ -275,11 +284,11 @@ disable_legacy_service() {
 }
 
 cleanup_obsolete_pulse_unit() {
-  local pulse_unit="/etc/systemd/system/powerblockenhanced-pulse.service"
+  local pulse_unit="/etc/systemd/system/powerblockextended-pulse.service"
 
   if [ -f "$pulse_unit" ]; then
     echo "Removing obsolete pulse helper unit..."
-    systemctl disable --now powerblockenhanced-pulse.service 2>/dev/null || true
+    systemctl disable --now powerblockextended-pulse.service 2>/dev/null || true
     rm -f "$pulse_unit"
   fi
 }

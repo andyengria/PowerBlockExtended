@@ -1,2 +1,2 @@
 #!/bin/bash
-exec /sbin/shutdown -h now "PowerBlockEnhanced requested shutdown"
+exec /sbin/shutdown -h now "PowerBlockExtended requested shutdown"

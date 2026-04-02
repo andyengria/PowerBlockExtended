@@ -30,7 +30,7 @@ DO_LOGGING=$DEFAULT_LOGGING
 isShutdownRunning=0
 terminateRequested=0
 
-RUNDIR=/run/powerblockenhanced
+RUNDIR=/run/powerblockextended
 HOLDER_PID_FILE="$RUNDIR/holder.pid"
 HOLDER_LEVEL_FILE="$RUNDIR/holder.level"
 
@@ -72,14 +72,14 @@ iniget() {
 write_log() {
     if [[ ${DO_LOGGING:-0} != 0 ]]; then
         while read -r text; do
-            logger -t powerblockenhanced "$text"
+            logger -t powerblockextended "$text"
         done
     fi
 }
 
 checkForRoot() {
     if [ "${EUID:-$(id -u)}" -ne 0 ]; then
-        echo "ERROR: powerblockenhanced must be run as root." >&2
+        echo "ERROR: powerblockextended must be run as root." >&2
         exit 1
     fi
 }
@@ -232,7 +232,7 @@ read_holder_level() {
 start_holder() {
     local level="$1"
 
-    /usr/local/sbin/powerblockenhanced-hold "$GPIO_BACKEND" "$chip" "$STATUS_PIN" "$level" &
+    /usr/local/sbin/powerblockextended-hold "$GPIO_BACKEND" "$chip" "$STATUS_PIN" "$level" &
     local pid=$!
 
     sleep 0.05
@@ -310,7 +310,7 @@ main() {
     detect_gpio_backend
     init_shutdown_pin
 
-    echo "Starting PowerBlockEnhanced driver, version $VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH" | write_log
+    echo "Starting PowerBlockExtended driver, version $VERSION_MAJOR.$VERSION_MINOR.$VERSION_PATCH" | write_log
 
     ensure_high_holder
 

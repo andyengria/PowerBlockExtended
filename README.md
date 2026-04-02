@@ -63,7 +63,7 @@ Reboot intent comes from the OS reboot (i.e. sudo reboot) not switch status and 
 
 ## Raspberry Pi Service
 
-### `powerblockenhanced.service`
+### `powerblockextended.service`
 
 The service:
 
@@ -139,10 +139,10 @@ sudo ./install.sh
 
 ### Installed components
 
-* `/usr/local/sbin/powerblockenhanced`
-* `/usr/local/sbin/powerblockenhanced-hold`
-* `/etc/systemd/system/powerblockenhanced.service`
-* `/usr/lib/systemd/system-shutdown/powerblockenhanced-reboot-pulse`
+* `/usr/local/sbin/powerblockextended`
+* `/usr/local/sbin/powerblockextended-hold`
+* `/etc/systemd/system/powerblockextended.service`
+* `/usr/lib/systemd/system-shutdown/powerblockextended-reboot-pulse`
 
 The service is enabled and started automatically.
 
@@ -187,7 +187,7 @@ Default:
 
 ```bash
 #!/bin/bash
-exec /sbin/shutdown -h now "PowerBlockEnhanced requested shutdown"
+exec /sbin/shutdown -h now "PowerBlockExtended requested shutdown"
 ```
 
 Custom scripts can be used to perform additional actions before shutdown.
@@ -210,7 +210,7 @@ Custom scripts can be used to perform additional actions before shutdown.
 Restarting the service does not interrupt power:
 
 ```bash
-sudo systemctl restart powerblockenhanced.service
+sudo systemctl restart powerblockextended.service
 ```
 
 ---
