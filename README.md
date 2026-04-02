@@ -127,7 +127,7 @@ Typical Arduino settings:
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
 ````
 
-Or:
+Or locally:
 
 ```bash
 git clone https://github.com/andyengria/PowerBlockExtended.git
@@ -218,6 +218,13 @@ sudo systemctl restart powerblockextended.service
 ## Uninstall
 
 ```bash
+wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/uninstall.sh | sudo bash
+```
+
+Or locally:
+
+```bash
+cd PowerBlockExtended
 sudo ./uninstall.sh
 ```
 

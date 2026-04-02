@@ -171,9 +171,13 @@ install_units() {
 }
 
 install_default_config_if_missing() {
-  if [ ! -f "$CONFIG_DST" ]; then
-    echo "Installing default config at $CONFIG_DST..."
-    cat > "$CONFIG_DST" <<'EOF'
+  if [ -e "$CONFIG_DST" ]; then
+    echo "Preserving existing config at $CONFIG_DST"
+    return
+  fi
+
+  echo "Installing default config at $CONFIG_DST..."
+  cat > "$CONFIG_DST" <<'EOF'
 [powerblock]
 activated=1
 statuspin=17
@@ -181,23 +185,21 @@ shutdownpin=18
 logging=1
 shutdownscript=/etc/powerblockswitchoff.sh
 EOF
-    chmod 0644 "$CONFIG_DST"
-  else
-    echo "Preserving existing config at $CONFIG_DST"
-  fi
+  chmod 0644 "$CONFIG_DST"
 }
 
 install_shutdown_helper_if_missing() {
-  if [ ! -f "$SHUTDOWN_SCRIPT_DST" ]; then
-    echo "Installing default shutdown helper at $SHUTDOWN_SCRIPT_DST..."
-    cat > "$SHUTDOWN_SCRIPT_DST" <<'EOF'
+  if [ -e "$SHUTDOWN_SCRIPT_DST" ]; then
+    echo "Preserving existing shutdown helper at $SHUTDOWN_SCRIPT_DST"
+    return
+  fi
+
+  echo "Installing default shutdown helper at $SHUTDOWN_SCRIPT_DST..."
+  cat > "$SHUTDOWN_SCRIPT_DST" <<'EOF'
 #!/bin/bash
 exec /sbin/shutdown -h now "PowerBlockExtended requested shutdown"
 EOF
-    chmod 0755 "$SHUTDOWN_SCRIPT_DST"
-  else
-    echo "Preserving existing shutdown helper at $SHUTDOWN_SCRIPT_DST"
-  fi
+  chmod 0755 "$SHUTDOWN_SCRIPT_DST"
 }
 
 install_reboot_pulse_hook() {
