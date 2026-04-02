@@ -110,6 +110,12 @@ The installer selects the appropriate backend automatically.
 
 ### 1. Flash firmware
 
+Note: You must flash the PowerBlockExtended firmware to enable extended features such as reboot-without-power-cut and restore-after-power-loss.
+
+👉 See the firmware flashing guide: [firmware/flashguide.md](firmware/flashguide.md)
+
+If you install the Extended Raspberry Pi service without updating the firmware, the system will behave like a stock PowerBlock and these features will not be available.
+
 Flash the ATtiny85 using Arduino IDE or an AVR programmer.
 
 Typical Arduino settings:
@@ -118,6 +124,15 @@ Typical Arduino settings:
 - Chip: ATtiny85  
 - Clock: 8 MHz internal  
 - Upload method: Upload Using Programmer  
+
+⚠️ Firmware mismatch warning
+
+If you experience:
+- unexpected power-off during reboot
+- no restore after power loss
+- inconsistent shutdown behaviour
+
+verify that the ATtiny85 firmware has been updated to PowerBlockExtended.
 
 ---
 
