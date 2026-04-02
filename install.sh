@@ -234,6 +234,7 @@ case "\$ACTION" in
 esac
 
 /usr/bin/gpioset -m time -s 0 -u 250000 ${gpiochip} ${status_pin}=0
+/usr/bin/gpioset -m time -s 1 ${gpiochip} ${status_pin}=0
 
 exit 0
 EOF
