@@ -138,6 +138,14 @@ verify that the ATtiny85 firmware has been updated to PowerBlockExtended.
 
 ### 2. Install on Raspberry Pi
 
+⚠️ **Raspberry Pi service required**
+
+The PowerBlockExtended Raspberry Pi service is required for reboot-without-power-cut.
+
+Without the service, a reboot will be treated as a shutdown and power will be switched off.
+
+👉 Install using:  
+
 ```bash
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
 ````
