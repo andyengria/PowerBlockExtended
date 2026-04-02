@@ -1,145 +1,136 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SERVICE="powerblockextended.service"
 CONFIG_FILE="/etc/powerblockconfig.cfg"
-HOLD_BIN="/usr/local/sbin/powerblockextended-hold"
+PULSE_SECONDS="${1:-1}"
+GPIOCHIP=0
+STATUSPIN=17
+BACKEND="sysfs"
 
 log() {
     echo "[test-pulse] $*"
 }
 
-fail() {
-    echo "[test-pulse] ERROR: $*" >&2
-    exit 1
-}
-
-require_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        fail "run as root: sudo bash test-pulse.sh"
-    fi
-}
-
 load_config() {
-    GPIOCHIP="0"
-    STATUSPIN="17"
-    HOLD_LEVEL="1"
-    PULSE_SECONDS="${1:-1}"
-
     if [ -f "$CONFIG_FILE" ]; then
-        STATUSPIN="$(awk -F= '
+        local tmp
+        tmp="$(awk -F= '
             /^\[powerblock\]/ { in_section=1; next }
-            /^\[/ && $0 !~ /^\[powerblock\]/ { in_section=0 }
-            in_section && $1=="statuspin" { gsub(/[ \t\r]/,"",$2); print $2; exit }
-        ' "$CONFIG_FILE")"
-
-        if [ -z "${STATUSPIN:-}" ]; then
-            STATUSPIN="17"
-        fi
+            /^\[/ { in_section=0 }
+            in_section && $1=="statuspin" {
+                gsub(/[[:space:]]/, "", $2)
+                print $2
+                exit
+            }
+        ' "$CONFIG_FILE" 2>/dev/null || true)"
+        [ -n "${tmp:-}" ] && STATUSPIN="$tmp"
     fi
+}
+
+detect_gpiochip() {
+    local model_string
+    model_string="$(grep -m1 'Model' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)"
+
+    case "$model_string" in
+        *"Pi 5"*|*"Compute Module 5"*)
+            GPIOCHIP=4
+            ;;
+        *)
+            GPIOCHIP=0
+            ;;
+    esac
 }
 
 detect_backend() {
-    if command -v gpiodetect >/dev/null 2>&1 \
-        && command -v gpioset >/dev/null 2>&1 \
-        && command -v gpioget >/dev/null 2>&1; then
+    if ! command -v gpioset >/dev/null 2>&1; then
+        BACKEND="sysfs"
+        return
+    fi
 
-        local ver major
-        ver="$(gpioset --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
-        major="$(echo "${ver:-0}" | cut -d. -f1)"
+    local ver helptext
+    ver="$(gpioset --version 2>/dev/null || true)"
 
-        if [ "${major:-0}" -ge 2 ] 2>/dev/null; then
+    case "$ver" in
+        *" v2."*|*" 2."*)
             BACKEND="gpiod-v2"
-        else
+            return
+            ;;
+        *" v1."*|*" 1."*)
             BACKEND="gpiod-v1"
-        fi
+            return
+            ;;
+    esac
+
+    helptext="$(gpioset --help 2>&1 || true)"
+
+    if printf '%s\n' "$helptext" | grep -q -- '--hold-period'; then
+        BACKEND="gpiod-v2"
+    elif printf '%s\n' "$helptext" | grep -q -- '--toggle'; then
+        BACKEND="gpiod-v2"
+    elif printf '%s\n' "$helptext" | grep -q -- '--mode'; then
+        BACKEND="gpiod-v1"
     else
         BACKEND="sysfs"
     fi
 }
 
-find_hold_pid() {
-    HOLD_PID="$(pgrep -f "^bash ${HOLD_BIN} " || true)"
-}
-
-stop_hold() {
-    find_hold_pid
-    if [ -n "${HOLD_PID:-}" ]; then
-        log "stopping hold helper pid=${HOLD_PID}"
-        kill "${HOLD_PID}" || true
-        sleep 0.2
-    else
-        log "no existing hold helper found"
-    fi
-}
-
 sysfs_export_if_needed() {
     local pin="$1"
-    [ -d "/sys/class/gpio/gpio${pin}" ] || echo "$pin" > /sys/class/gpio/export
-}
-
-sysfs_set_direction_output() {
-    local pin="$1"
-    sysfs_export_if_needed "$pin"
-    echo out > "/sys/class/gpio/gpio${pin}/direction"
-}
-
-sysfs_write() {
-    local pin="$1"
-    local level="$2"
-    echo "$level" > "/sys/class/gpio/gpio${pin}/value"
-}
-
-send_pulse() {
-    local active_level inactive_level
-    active_level="${HOLD_LEVEL}"
-    if [ "$active_level" = "1" ]; then
-        inactive_level="0"
-    else
-        inactive_level="1"
+    if [ ! -d "/sys/class/gpio/gpio$pin" ]; then
+        echo "$pin" > /sys/class/gpio/export
+        sleep 0.1
     fi
-
-    log "sending pulse: backend=${BACKEND} gpiochip=${GPIOCHIP} pin=${STATUSPIN} active=${active_level} duration=${PULSE_SECONDS}s"
-
-    case "$BACKEND" in
-        sysfs)
-            sysfs_set_direction_output "$STATUSPIN"
-            sysfs_write "$STATUSPIN" "$active_level"
-            sleep "$PULSE_SECONDS"
-            sysfs_write "$STATUSPIN" "$inactive_level"
-            ;;
-        gpiod-v1)
-            gpioset "$GPIOCHIP" "${STATUSPIN}=${active_level}" &
-            local pid=$!
-            sleep "$PULSE_SECONDS"
-            kill "$pid" || true
-            wait "$pid" 2>/dev/null || true
-            ;;
-        gpiod-v2)
-            gpioset --mode=signal --sec="$PULSE_SECONDS" "$GPIOCHIP" "${STATUSPIN}=${active_level}"
-            ;;
-        *)
-            fail "unknown backend: $BACKEND"
-            ;;
-    esac
 }
 
-restart_hold() {
-    log "restarting hold helper: ${HOLD_BIN} ${BACKEND} ${GPIOCHIP} ${STATUSPIN} ${HOLD_LEVEL}"
-    nohup bash "$HOLD_BIN" "$BACKEND" "$GPIOCHIP" "$STATUSPIN" "$HOLD_LEVEL" >/tmp/powerblock-test-pulse.log 2>&1 &
-    sleep 0.2
-    pgrep -af "$HOLD_BIN" || true
+pulse_sysfs() {
+    sysfs_export_if_needed "$STATUSPIN"
+    echo out > "/sys/class/gpio/gpio$STATUSPIN/direction"
+    echo 0 > "/sys/class/gpio/gpio$STATUSPIN/value"
+    sleep "$PULSE_SECONDS"
+    echo 1 > "/sys/class/gpio/gpio$STATUSPIN/value"
+}
+
+pulse_gpiod_v1() {
+    gpioset -c "$GPIOCHIP" -m=time -s "$PULSE_SECONDS" "$STATUSPIN=0"
+    gpioset -c "$GPIOCHIP" -m=time -s 0.05 "$STATUSPIN=1"
+}
+
+pulse_gpiod_v2() {
+    local ms
+    ms="$(awk "BEGIN { printf \"%d\", $PULSE_SECONDS * 1000 }")"
+    gpioset -c "$GPIOCHIP" -t "${ms}ms,50ms,0" "$STATUSPIN=0"
 }
 
 main() {
-    require_root
-    load_config "${1:-1}"
+    [ "$(id -u)" -eq 0 ] || { echo "run with sudo"; exit 1; }
+
+    load_config
+    detect_gpiochip
     detect_backend
 
-    log "config: gpiochip=${GPIOCHIP} statuspin=${STATUSPIN} holdlevel=${HOLD_LEVEL}"
-    stop_hold
-    send_pulse
-    restart_hold
-    log "done"
+    log "stopping service"
+    systemctl stop "$SERVICE"
+    sleep 0.5
+
+    log "remaining processes:"
+    pgrep -af powerblockextended || true
+
+    log "backend=$BACKEND gpiochip=$GPIOCHIP statuspin=$STATUSPIN pulse=${PULSE_SECONDS}s"
+
+    case "$BACKEND" in
+        sysfs) pulse_sysfs ;;
+        gpiod-v1) pulse_gpiod_v1 ;;
+        gpiod-v2) pulse_gpiod_v2 ;;
+        *) echo "unknown backend: $BACKEND"; exit 1 ;;
+    esac
+
+    log "starting service"
+    systemctl start "$SERVICE"
+    sleep 0.5
+
+    log "running processes:"
+    pgrep -af powerblockextended || true
 }
 
 main "$@"
