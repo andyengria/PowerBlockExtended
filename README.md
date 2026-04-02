@@ -144,7 +144,7 @@ The PowerBlockExtended Raspberry Pi service is required for reboot-without-power
 
 Without the service, a reboot will be treated as a shutdown and power will be switched off.
 
-👉 Install using:  
+👉 Install directly from this repository using:  
 
 ```bash
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/install.sh | sudo bash
@@ -239,6 +239,8 @@ sudo systemctl restart powerblockextended.service
 ---
 
 ## Uninstall
+
+👉 Uninstall directly from this repository using:  
 
 ```bash
 wget -O - https://raw.githubusercontent.com/andyengria/PowerBlockExtended/main/uninstall.sh | sudo bash
