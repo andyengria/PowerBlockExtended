@@ -20,15 +20,22 @@ require_root() {
 }
 
 load_config() {
-    if [ -f "$CONFIG_FILE" ]; then
-        # shellcheck disable=SC1090
-        . "$CONFIG_FILE"
-    fi
-
-    GPIOCHIP="${gpiochip:-${GPIOCHIP:-0}}"
-    STATUSPIN="${statuspin:-${STATUSPIN:-17}}"
-    HOLD_LEVEL="${holdlevel:-${HOLD_LEVEL:-1}}"
+    GPIOCHIP="0"
+    STATUSPIN="17"
+    HOLD_LEVEL="1"
     PULSE_SECONDS="${1:-1}"
+
+    if [ -f "$CONFIG_FILE" ]; then
+        STATUSPIN="$(awk -F= '
+            /^\[powerblock\]/ { in_section=1; next }
+            /^\[/ && $0 !~ /^\[powerblock\]/ { in_section=0 }
+            in_section && $1=="statuspin" { gsub(/[ \t\r]/,"",$2); print $2; exit }
+        ' "$CONFIG_FILE")"
+
+        if [ -z "${STATUSPIN:-}" ]; then
+            STATUSPIN="17"
+        fi
+    fi
 }
 
 detect_backend() {
