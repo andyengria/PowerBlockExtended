@@ -223,7 +223,7 @@ esac
 exit 0
 EOF
       ;;
-    gpiod-v1)
+        gpiod-v1)
       cat > "$HOOK_DST" <<EOF
 #!/bin/sh
 ACTION="\${1:-}"
@@ -233,8 +233,7 @@ case "\$ACTION" in
   *) exit 0 ;;
 esac
 
-/usr/bin/gpioset -m time -s 1 ${gpiochip} ${status_pin}=0
-/usr/bin/gpioset -m time -s 1 ${gpiochip} ${status_pin}=1
+/usr/bin/gpioset -m time -s 0 -u 250000 ${gpiochip} ${status_pin}=0
 
 exit 0
 EOF

@@ -44,7 +44,7 @@ case "$BACKEND" in
         done
         ;;
     gpiod-v1)
-        exec gpioset "$CHIP" "$PIN=$LEVEL"
+        exec gpioset -m signal "$CHIP" "$PIN=$LEVEL"
         ;;
     gpiod-v2)
         exec gpioset -c "$CHIP" "$PIN=$LEVEL"
