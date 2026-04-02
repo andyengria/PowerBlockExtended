@@ -100,7 +100,6 @@ load_config() {
         tmp=$(iniget "$CONFIGFILE" powerblock logging || true)
         [ -n "$tmp" ] && DO_LOGGING="$tmp"
 
-        # ✅ THIS IS THE MISSING PIECE
         tmp=$(iniget "$CONFIGFILE" powerblock shutdownscript || true)
         [ -n "$tmp" ] && SHUTDOWNSCRIPT="$tmp"
     fi
@@ -111,72 +110,52 @@ load_config() {
     echo "Shutdown Script is $SHUTDOWNSCRIPT" | write_log
 }
 
-checkKernel() {
-    local current_kernel
-    current_kernel=$(uname --kernel-release | cut --delimiter="." --fields=1-2)
-    local current_major
-    current_major=$(echo "$current_kernel" | cut --delimiter="." --fields=1)
-    local current_minor
-    current_minor=$(echo "$current_kernel" | cut --delimiter="." --fields=2)
+detect_gpiochip() {
+    local model_string
+    model_string="$(grep -m1 'Model' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)"
 
-    local allowed_kernel="6.6"
-    local allowed_major
-    allowed_major=$(echo "$allowed_kernel" | cut --delimiter="." --fields=1)
-    local allowed_minor
-    allowed_minor=$(echo "$allowed_kernel" | cut --delimiter="." --fields=2)
-
-    if [ "$current_major" -ge "$allowed_major" ] && [ "$current_minor" -ge "$allowed_minor" ]; then
-        return 0
-    fi
-    return 1
+    case "$model_string" in
+        *"Pi 5"*|*"Compute Module 5"*)
+            chip=4
+            ;;
+        *)
+            chip=0
+            ;;
+    esac
 }
 
 detect_gpio_backend() {
-    local gpio_tools_available=false
-    local gpiod_version=""
-    local gpiod_major="0"
+    local ver helptext
 
-    if command -v gpiodetect >/dev/null 2>&1 && command -v gpioset >/dev/null 2>&1 && command -v gpioget >/dev/null 2>&1; then
-        gpio_tools_available=true
+    if ! command -v gpioset >/dev/null 2>&1; then
+        GPIO_BACKEND="sysfs"
+        echo "Detected backend: $GPIO_BACKEND on gpiochip$chip" | write_log
+        return
     fi
 
-    local model_string
-    model_string=$(grep -m1 'Model' /proc/cpuinfo | cut -d: -f2)
-    local model
-    model=$(echo "$model_string" | grep -oE 'Pi [0-9]+' | grep -oE '[0-9]+' || true)
+    ver="$(gpioset --version 2>/dev/null || true)"
 
-    if [ -z "$model" ]; then
-        model=$(echo "$model_string" | grep -oE 'Zero [0-9]+' | grep -oE '[0-9]+' || true)
-    fi
-    if [ -z "$model" ]; then
-        model=$(echo "$model_string" | grep -oE 'Compute Module [0-9]+' | grep -oE '[0-9]+' || true)
-    fi
-    if [ -z "$model" ]; then
-        model=0
-    fi
-
-    if [ "$model" -ge 5 ] 2>/dev/null; then
-        chip=4
-    else
-        chip=0
-    fi
-
-    if $gpio_tools_available; then
-        if [ "$chip" -ne 4 ]; then
-            if ! checkKernel; then
-                gpio_tools_available=false
-            fi
-        fi
-    fi
-
-    if $gpio_tools_available; then
-        gpiod_version=$(gpioset --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
-        gpiod_major=$(echo "${gpiod_version:-0}" | cut -d. -f1)
-        if [ "${gpiod_major:-0}" -ge 2 ] 2>/dev/null; then
+    case "$ver" in
+        *" v2."*|*" 2."*)
             GPIO_BACKEND="gpiod-v2"
-        else
+            echo "Detected backend: $GPIO_BACKEND on gpiochip$chip" | write_log
+            return
+            ;;
+        *" v1."*|*" 1."*)
             GPIO_BACKEND="gpiod-v1"
-        fi
+            echo "Detected backend: $GPIO_BACKEND on gpiochip$chip" | write_log
+            return
+            ;;
+    esac
+
+    helptext="$(gpioset --help 2>&1 || true)"
+
+    if printf '%s\n' "$helptext" | grep -q -- '--hold-period'; then
+        GPIO_BACKEND="gpiod-v2"
+    elif printf '%s\n' "$helptext" | grep -q -- '--toggle'; then
+        GPIO_BACKEND="gpiod-v2"
+    elif printf '%s\n' "$helptext" | grep -q -- '--mode'; then
+        GPIO_BACKEND="gpiod-v1"
     else
         GPIO_BACKEND="sysfs"
     fi
@@ -237,13 +216,13 @@ start_holder() {
 
     sleep 0.05
     if ! kill -0 "$pid" 2>/dev/null; then
-        echo "ERROR: failed to start holder at level $level" | write_log
+        echo "ERROR: failed to start holder at level $level using backend $GPIO_BACKEND" | write_log
         exit 1
     fi
 
     echo "$pid" > "$HOLDER_PID_FILE"
     echo "$level" > "$HOLDER_LEVEL_FILE"
-    echo "Started holder PID $pid level $level" | write_log
+    echo "Started holder PID $pid backend $GPIO_BACKEND level $level" | write_log
 }
 
 stop_holder() {
@@ -307,6 +286,7 @@ main() {
     checkForRoot
     mkdir -p "$RUNDIR"
     load_config
+    detect_gpiochip
     detect_gpio_backend
     init_shutdown_pin
 
