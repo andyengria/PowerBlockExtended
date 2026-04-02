@@ -116,7 +116,7 @@ If you install the Extended Raspberry Pi service without updating the firmware, 
 
 Flash the ATtiny85 using Arduino IDE or an AVR programmer.
 
-👉 See the firmware flashing guide: [firmware/flashguide.md](firmware/flashguide.md)
+👉 See the firmware flashing guide: [firmware/flashing.md](firmware/flashing.md)
 
 Typical Arduino settings:
 
